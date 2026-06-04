@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="CyberHub.API/CyberHub.API.csproj" />
+  <Project Path="CyberHub.BLL/CyberHub.BLL.csproj" />
+  <Project Path="CyberHub.DAL/CyberHub.DAL.csproj" />
+</Solution>
