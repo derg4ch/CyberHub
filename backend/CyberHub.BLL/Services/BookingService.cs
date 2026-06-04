@@ -1,78 +1,59 @@
 using CyberHub.BLL.DTOs;
+using CyberHub.BLL.Exceptions;
 using CyberHub.BLL.Interfaces;
 using CyberHub.DAL.Models;
-using CyberHub.DAL.Repositories.Interfaces;
+using CyberHub.DAL.UnitOfWork;
+using Mapster;
 
 namespace CyberHub.BLL.Services;
 
-public class BookingService(IBookingRepository repo) : IBookingService
+public class BookingService(IUnitOfWork uow) : IBookingService
 {
+    private static readonly string[] AllowedStatuses =
+        ["Pending", "Confirmed", "Active", "Completed", "Cancelled", "No-Show"];
+
     public async Task<IEnumerable<BookingDto>> GetAllAsync(
         string? status = null, DateTime? from = null, DateTime? to = null)
     {
-        IEnumerable<Booking> bookings;
+        var bookings = (!string.IsNullOrEmpty(status))
+            ? await uow.Bookings.GetByStatusAsync(status)
+            : (from.HasValue && to.HasValue)
+                ? await uow.Bookings.GetRangeAsync(from.Value, to.Value)
+                : await uow.Bookings.GetAllAsync();
 
-        if (!string.IsNullOrEmpty(status))
-            bookings = await repo.GetByStatusAsync(status);
-        else if (from.HasValue && to.HasValue)
-            bookings = await repo.GetRangeAsync(from.Value, to.Value);
-        else
-            bookings = await repo.GetAllAsync();
-
-        return bookings.Select(ToDto);
+        return bookings.Adapt<IEnumerable<BookingDto>>();
     }
 
     public async Task<IEnumerable<BookingDto>> GetTodayAsync()
-    {
-        var bookings = await repo.GetTodayAsync();
-        return bookings.Select(ToDto);
-    }
+        => (await uow.Bookings.GetTodayAsync()).Adapt<IEnumerable<BookingDto>>();
 
     public async Task<IEnumerable<BookingDto>> GetByUserAsync(Guid userId)
-    {
-        var bookings = await repo.GetByUserAsync(userId);
-        return bookings.Select(ToDto);
-    }
+        => (await uow.Bookings.GetByUserAsync(userId)).Adapt<IEnumerable<BookingDto>>();
 
     public async Task<BookingDto?> GetByIdAsync(Guid id)
     {
-        var b = await repo.GetByIdAsync(id);
-        return b is null ? null : ToDto(b);
+        var booking = await uow.Bookings.GetByIdAsync(id)
+            ?? throw new NotFoundException(nameof(Booking), id);
+        return booking.Adapt<BookingDto>();
     }
 
-    public async Task<BookingDto> CreateAsync(CreateBookingRequest r)
+    public async Task<BookingDto> CreateAsync(CreateBookingRequest request)
     {
-        var booking = new Booking
-        {
-            Id             = Guid.NewGuid(),
-            UserId         = r.UserId,
-            WorkstationId  = r.WorkstationId,
-            ZoneId         = r.ZoneId,
-            PackageId      = r.PackageId,
-            StartTime      = r.StartTime.ToUniversalTime(),
-            EndTime        = r.EndTime.ToUniversalTime(),
-            Status         = "Pending",
-            TotalPrice     = r.TotalPrice,
-            XpEarned       = r.XpEarned,
-            Notes          = r.Notes,
-            CreatedAt      = DateTime.UtcNow,
-        };
-        await repo.CreateAsync(booking);
-        return ToDto(booking);
+        var booking = request.Adapt<Booking>();
+        await uow.Bookings.CreateAsync(booking);
+        await uow.SaveChangesAsync();
+        return booking.Adapt<BookingDto>();
     }
 
-    public async Task<bool> UpdateStatusAsync(Guid id, UpdateBookingStatusRequest r)
+    public async Task<bool> UpdateStatusAsync(Guid id, UpdateBookingStatusRequest request)
     {
-        var allowed = new[] { "Pending", "Confirmed", "Active", "Completed", "Cancelled", "No-Show" };
-        if (!allowed.Contains(r.Status))
-            throw new ArgumentException($"Invalid status: {r.Status}");
+        if (!AllowedStatuses.Contains(request.Status))
+            throw new ValidationException(nameof(request.Status),
+                $"'{request.Status}' is not a valid booking status.");
 
-        return await repo.UpdateStatusAsync(id, r.Status);
+        var updated = await uow.Bookings.UpdateStatusAsync(id, request.Status);
+        if (!updated) throw new NotFoundException(nameof(Booking), id);
+        await uow.SaveChangesAsync();
+        return true;
     }
-
-    private static BookingDto ToDto(Booking b) => new(
-        b.Id, b.UserId, b.WorkstationId, b.ZoneId, b.PackageId,
-        b.StartTime, b.EndTime, b.Status, b.TotalPrice, b.XpEarned, b.Notes, b.CreatedAt,
-        b.Zone?.Name, b.Zone?.Tier, b.Workstation?.Name, b.Package?.Name
-    );
 }

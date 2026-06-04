@@ -1,65 +1,55 @@
 using CyberHub.BLL.DTOs;
+using CyberHub.BLL.Exceptions;
 using CyberHub.BLL.Interfaces;
 using CyberHub.DAL.Models;
-using CyberHub.DAL.Repositories.Interfaces;
+using CyberHub.DAL.UnitOfWork;
+using Mapster;
 
 namespace CyberHub.BLL.Services;
 
-public class PackageService(IPackageRepository repo) : IPackageService
+public class PackageService(IUnitOfWork uow) : IPackageService
 {
     public async Task<IEnumerable<PackageDto>> GetAllAsync(bool? active = null)
     {
-        var pkgs = active.HasValue
-            ? active.Value ? await repo.GetActiveAsync() : await repo.GetAllAsync()
-            : await repo.GetAllAsync();
-        return pkgs.Select(ToDto);
+        var pkgs = active switch
+        {
+            true => await uow.Packages.GetActiveAsync(),
+            _    => await uow.Packages.GetAllAsync(),
+        };
+        return pkgs.Adapt<IEnumerable<PackageDto>>();
     }
 
     public async Task<PackageDto?> GetByIdAsync(Guid id)
     {
-        var p = await repo.GetByIdAsync(id);
-        return p is null ? null : ToDto(p);
+        var pkg = await uow.Packages.GetByIdAsync(id)
+            ?? throw new NotFoundException(nameof(Package), id);
+        return pkg.Adapt<PackageDto>();
     }
 
-    public async Task<PackageDto> CreateAsync(CreatePackageRequest r)
+    public async Task<PackageDto> CreateAsync(CreatePackageRequest request)
     {
-        var pkg = new Package
-        {
-            Id              = Guid.NewGuid(),
-            Category        = r.Category,
-            Name            = r.Name,
-            Description     = r.Description,
-            Price           = r.Price,
-            DurationMinutes = r.DurationMinutes,
-            XpReward        = r.XpReward,
-            IsActive        = r.IsActive,
-            CreatedAt       = DateTime.UtcNow,
-        };
-        await repo.CreateAsync(pkg);
-        return ToDto(pkg);
+        var pkg = request.Adapt<Package>();
+        await uow.Packages.CreateAsync(pkg);
+        await uow.SaveChangesAsync();
+        return pkg.Adapt<PackageDto>();
     }
 
-    public async Task<PackageDto> UpdateAsync(UpdatePackageRequest r)
+    public async Task<PackageDto> UpdateAsync(UpdatePackageRequest request)
     {
-        var pkg = await repo.GetByIdAsync(r.Id)
-            ?? throw new KeyNotFoundException($"Package {r.Id} not found");
+        var pkg = await uow.Packages.GetByIdAsync(request.Id)
+            ?? throw new NotFoundException(nameof(Package), request.Id);
 
-        pkg.Category        = r.Category;
-        pkg.Name            = r.Name;
-        pkg.Description     = r.Description;
-        pkg.Price           = r.Price;
-        pkg.DurationMinutes = r.DurationMinutes;
-        pkg.XpReward        = r.XpReward;
-        pkg.IsActive        = r.IsActive;
-
-        await repo.UpdateAsync(pkg);
-        return ToDto(pkg);
+        request.Adapt(pkg);
+        await uow.Packages.UpdateAsync(pkg);
+        await uow.SaveChangesAsync();
+        return pkg.Adapt<PackageDto>();
     }
 
-    public Task DeleteAsync(Guid id) => repo.DeleteAsync(id);
-
-    private static PackageDto ToDto(Package p) => new(
-        p.Id, p.Category, p.Name, p.Description,
-        p.Price, p.DurationMinutes, p.XpReward, p.IsActive, p.CreatedAt
-    );
+    public async Task DeleteAsync(Guid id)
+    {
+        if (!await uow.Packages.ExistsAsync(id))
+            throw new NotFoundException(nameof(Package), id);
+        await uow.Packages.DeleteAsync(id);
+        await uow.SaveChangesAsync();
+    }
 }

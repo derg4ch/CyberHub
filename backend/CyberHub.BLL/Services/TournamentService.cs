@@ -1,77 +1,57 @@
 using CyberHub.BLL.DTOs;
+using CyberHub.BLL.Exceptions;
 using CyberHub.BLL.Interfaces;
 using CyberHub.DAL.Models;
-using CyberHub.DAL.Repositories.Interfaces;
+using CyberHub.DAL.UnitOfWork;
+using Mapster;
 
 namespace CyberHub.BLL.Services;
 
-public class TournamentService(ITournamentRepository repo) : ITournamentService
+public class TournamentService(IUnitOfWork uow) : ITournamentService
 {
     public async Task<IEnumerable<TournamentDto>> GetAllAsync(string? status = null)
     {
         var items = string.IsNullOrEmpty(status)
-            ? await repo.GetAllAsync()
-            : await repo.GetByStatusAsync(status);
-        return items.Select(ToDto);
+            ? await uow.Tournaments.GetAllAsync()
+            : await uow.Tournaments.GetByStatusAsync(status);
+        return items.Adapt<IEnumerable<TournamentDto>>();
     }
 
     public async Task<IEnumerable<TournamentDto>> GetUpcomingAsync()
-    {
-        var items = await repo.GetUpcomingAsync();
-        return items.Select(ToDto);
-    }
+        => (await uow.Tournaments.GetUpcomingAsync()).Adapt<IEnumerable<TournamentDto>>();
 
     public async Task<TournamentDto?> GetByIdAsync(Guid id)
     {
-        var t = await repo.GetByIdAsync(id);
-        return t is null ? null : ToDto(t);
+        var t = await uow.Tournaments.GetByIdAsync(id)
+            ?? throw new NotFoundException(nameof(Tournament), id);
+        return t.Adapt<TournamentDto>();
     }
 
-    public async Task<TournamentDto> CreateAsync(CreateTournamentRequest r)
+    public async Task<TournamentDto> CreateAsync(CreateTournamentRequest request)
     {
-        var t = new Tournament
-        {
-            Id                  = Guid.NewGuid(),
-            Name                = r.Name,
-            Game                = r.Game,
-            Description         = r.Description,
-            PrizePool           = r.PrizePool,
-            EntryFee            = r.EntryFee,
-            MaxParticipants     = r.MaxParticipants,
-            CurrentParticipants = 0,
-            StartTime           = r.StartTime?.ToUniversalTime(),
-            Status              = r.Status,
-            ImageUrl            = r.ImageUrl,
-            CreatedAt           = DateTime.UtcNow,
-        };
-        await repo.CreateAsync(t);
-        return ToDto(t);
+        var t = request.Adapt<Tournament>();
+        await uow.Tournaments.CreateAsync(t);
+        await uow.SaveChangesAsync();
+        return t.Adapt<TournamentDto>();
     }
 
-    public async Task<TournamentDto> UpdateAsync(UpdateTournamentRequest r)
+    public async Task<TournamentDto> UpdateAsync(UpdateTournamentRequest request)
     {
-        var t = await repo.GetByIdAsync(r.Id)
-            ?? throw new KeyNotFoundException($"Tournament {r.Id} not found");
+        var t = await uow.Tournaments.GetByIdAsync(request.Id)
+            ?? throw new NotFoundException(nameof(Tournament), request.Id);
 
-        t.Name            = r.Name;
-        t.Game            = r.Game;
-        t.Description     = r.Description;
-        t.PrizePool       = r.PrizePool;
-        t.EntryFee        = r.EntryFee;
-        t.MaxParticipants = r.MaxParticipants;
-        t.StartTime       = r.StartTime?.ToUniversalTime();
-        t.Status          = r.Status;
-        t.ImageUrl        = r.ImageUrl;
-
-        await repo.UpdateAsync(t);
-        return ToDto(t);
+        request.Adapt(t);
+        if (request.StartTime.HasValue) t.StartTime = request.StartTime.Value.ToUniversalTime();
+        await uow.Tournaments.UpdateAsync(t);
+        await uow.SaveChangesAsync();
+        return t.Adapt<TournamentDto>();
     }
 
-    public Task DeleteAsync(Guid id) => repo.DeleteAsync(id);
-
-    private static TournamentDto ToDto(Tournament t) => new(
-        t.Id, t.Name, t.Game, t.Description, t.PrizePool, t.EntryFee,
-        t.MaxParticipants, t.CurrentParticipants, t.StartTime,
-        t.Status, t.ImageUrl, t.CreatedAt
-    );
+    public async Task DeleteAsync(Guid id)
+    {
+        if (!await uow.Tournaments.ExistsAsync(id))
+            throw new NotFoundException(nameof(Tournament), id);
+        await uow.Tournaments.DeleteAsync(id);
+        await uow.SaveChangesAsync();
+    }
 }

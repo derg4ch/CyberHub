@@ -1,65 +1,56 @@
 using CyberHub.BLL.DTOs;
+using CyberHub.BLL.Exceptions;
 using CyberHub.BLL.Interfaces;
 using CyberHub.DAL.Models;
-using CyberHub.DAL.Repositories.Interfaces;
+using CyberHub.DAL.UnitOfWork;
+using Mapster;
 
 namespace CyberHub.BLL.Services;
 
-public class ZoneService(IZoneRepository repo) : IZoneService
+public class ZoneService(IUnitOfWork uow) : IZoneService
 {
     public async Task<IEnumerable<ZoneDto>> GetAllAsync(bool? active = null)
     {
-        var zones = active.HasValue
-            ? active.Value ? await repo.GetActiveAsync() : await repo.GetAllAsync()
-            : await repo.GetAllAsync();
-        return zones.Select(ToDto);
+        var zones = active switch
+        {
+            true  => await uow.Zones.GetActiveAsync(),
+            false => await uow.Zones.GetAllAsync(),
+            null  => await uow.Zones.GetAllAsync(),
+        };
+        return zones.Adapt<IEnumerable<ZoneDto>>();
     }
 
     public async Task<ZoneDto?> GetByIdAsync(Guid id)
     {
-        var z = await repo.GetByIdAsync(id);
-        return z is null ? null : ToDto(z);
+        var zone = await uow.Zones.GetByIdAsync(id)
+            ?? throw new NotFoundException(nameof(Zone), id);
+        return zone.Adapt<ZoneDto>();
     }
 
-    public async Task<ZoneDto> CreateAsync(CreateZoneRequest r)
+    public async Task<ZoneDto> CreateAsync(CreateZoneRequest request)
     {
-        var zone = new Zone
-        {
-            Id          = Guid.NewGuid(),
-            Name        = r.Name,
-            Description = r.Description,
-            Tier        = r.Tier,
-            HourlyRate  = r.HourlyRate,
-            SeatCount   = r.SeatCount,
-            ImageUrl    = r.ImageUrl,
-            IsActive    = r.IsActive,
-            CreatedAt   = DateTime.UtcNow,
-        };
-        await repo.CreateAsync(zone);
-        return ToDto(zone);
+        var zone = request.Adapt<Zone>();
+        await uow.Zones.CreateAsync(zone);
+        await uow.SaveChangesAsync();
+        return zone.Adapt<ZoneDto>();
     }
 
-    public async Task<ZoneDto> UpdateAsync(UpdateZoneRequest r)
+    public async Task<ZoneDto> UpdateAsync(UpdateZoneRequest request)
     {
-        var zone = await repo.GetByIdAsync(r.Id)
-            ?? throw new KeyNotFoundException($"Zone {r.Id} not found");
+        var zone = await uow.Zones.GetByIdAsync(request.Id)
+            ?? throw new NotFoundException(nameof(Zone), request.Id);
 
-        zone.Name        = r.Name;
-        zone.Description = r.Description;
-        zone.Tier        = r.Tier;
-        zone.HourlyRate  = r.HourlyRate;
-        zone.SeatCount   = r.SeatCount;
-        zone.ImageUrl    = r.ImageUrl;
-        zone.IsActive    = r.IsActive;
-
-        await repo.UpdateAsync(zone);
-        return ToDto(zone);
+        request.Adapt(zone);
+        await uow.Zones.UpdateAsync(zone);
+        await uow.SaveChangesAsync();
+        return zone.Adapt<ZoneDto>();
     }
 
-    public Task DeleteAsync(Guid id) => repo.DeleteAsync(id);
-
-    private static ZoneDto ToDto(Zone z) => new(
-        z.Id, z.Name, z.Description, z.Tier,
-        z.HourlyRate, z.SeatCount, z.ImageUrl, z.IsActive, z.CreatedAt
-    );
+    public async Task DeleteAsync(Guid id)
+    {
+        if (!await uow.Zones.ExistsAsync(id))
+            throw new NotFoundException(nameof(Zone), id);
+        await uow.Zones.DeleteAsync(id);
+        await uow.SaveChangesAsync();
+    }
 }
