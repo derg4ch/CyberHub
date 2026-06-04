@@ -71,8 +71,6 @@ Health check: `GET http://localhost:5000/health`
 
 #### Підключення до БД
 
-У файлі `backend/CyberHub.API/appsettings.json` замінити `YOUR_SUPABASE_DB_PASSWORD`:
-
 ```json
 "ConnectionStrings": {
   "DefaultConnection": "Host=db.<project>.supabase.co;Port=5432;Database=postgres;Username=postgres;Password=<password>;SSL Mode=Require;Trust Server Certificate=true"
