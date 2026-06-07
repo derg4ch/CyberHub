@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Menu, X } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { tokenStore } from "@/lib/api-client";
 import { useT, useLang, setLang, type Lang } from "@/lib/i18n";
 
 const LANGS: Lang[] = ["EN", "UK"];
@@ -14,9 +14,10 @@ export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setAuthed(!!s));
-    supabase.auth.getSession().then(({ data }) => setAuthed(!!data.session));
-    return () => subscription.unsubscribe();
+    setAuthed(!!tokenStore.get());
+    const onStorage = () => setAuthed(!!tokenStore.get());
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   useEffect(() => {
@@ -43,13 +44,11 @@ export function SiteHeader() {
     >
       <div className="container mx-auto px-4 h-14 flex items-center justify-between gap-4">
 
-        {/* Logo — Orbitron лише тут */}
         <Link to="/" className="flex items-center gap-2.5 shrink-0">
           <span className="font-display font-black text-lg text-primary tracking-wider">NEXUS</span>
           <span className="text-[10px] font-mono text-muted-foreground hidden sm:block">CYBER LOUNGE</span>
         </Link>
 
-        {/* Desktop nav */}
         <nav className="hidden lg:flex items-center gap-7">
           {NAV.map((n) => (
             <a key={n.href} href={n.href}
@@ -59,7 +58,6 @@ export function SiteHeader() {
           ))}
         </nav>
 
-        {/* Right */}
         <div className="flex items-center gap-2">
           <button
             onClick={() => setLang(LANGS.find((l) => l !== lang)!)}
@@ -83,7 +81,6 @@ export function SiteHeader() {
         </div>
       </div>
 
-      {/* Mobile menu */}
       {open && (
         <div className="lg:hidden border-t border-border bg-background px-4 py-3 space-y-0.5">
           {NAV.map((n) => (

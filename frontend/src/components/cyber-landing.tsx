@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { useState, useEffect, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, ChevronRight, Users } from "lucide-react";
+import { ArrowRight, ChevronRight, Users, X, ChevronLeft, ZoomIn } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { supabase } from "@/integrations/supabase/client";
+import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -12,12 +12,34 @@ import { TIER_COLORS, formatPrice } from "@/lib/gaming";
 import { useT } from "@/lib/i18n";
 
 /* ── Types ──────────────────────────────────────────────────── */
-type Zone        = { id: string; name: string; description: string; tier: string; hourly_rate: number; specs: Record<string,string>; image_url: string; seat_count: number };
-type Workstation = { id: string; zone_id: string; name: string; position_x: number; position_y: number };
-type Booking     = { id: string; workstation_id: string; start_time: string; end_time: string; status: string };
-type Package     = { id: string; category: string; name: string; description: string; price: number; duration_minutes: number; xp_reward: number };
-type Tournament  = { id: string; name: string; game: string; description: string; prize_pool: number; entry_fee: number; max_participants: number; current_participants: number; start_time: string; status: string; image_url: string };
-type GalleryItem = { id: string; image_url: string; title: string; category: string };
+type GalleryItem = { id: string; imageUrl: string; title: string; category: string };
+
+// Fallback placeholder when image fails to load
+const FALLBACK_IMG = "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&q=80";
+
+const GALLERY_ITEMS: GalleryItem[] = [
+  // Arena — verified IDs
+  { id: "g1",  category: "Arena",       title: "Standard Arena — Row A",              imageUrl: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&q=80" },
+  { id: "g2",  category: "Arena",       title: "Pro Arena — Tournament Setup",        imageUrl: "https://images.unsplash.com/photo-1593305841991-05c297ba4575?w=800&q=80" },
+  { id: "g3",  category: "Arena",       title: "Pro Arena — Night Mode",              imageUrl: "https://images.unsplash.com/photo-1555680202-c86f0e12f086?w=800&q=80" },
+  { id: "g4",  category: "Arena",       title: "Standard Arena — Full House",         imageUrl: "https://images.unsplash.com/photo-1560419015-7c427e8ae5ba?w=800&q=80" },
+  // VIP
+  { id: "g5",  category: "VIP",         title: "VIP Lounge — Private Booth",          imageUrl: "https://images.unsplash.com/photo-1614680376573-df3480f0c6ff?w=800&q=80" },
+  { id: "g6",  category: "VIP",         title: "VIP Lounge — OLED Setup",             imageUrl: "https://images.unsplash.com/photo-1616588589676-62b3bd4ff6d2?w=800&q=80" },
+  // Streaming
+  { id: "g7",  category: "Streaming",   title: "Streaming Studio — On Air",           imageUrl: "https://images.unsplash.com/photo-1598550476439-6847785fcea6?w=800&q=80" },
+  { id: "g8",  category: "Streaming",   title: "Streaming Studio — Dual PC Rig",      imageUrl: "https://images.unsplash.com/photo-1600861194942-f883de0dfe96?w=800&q=80" },
+  // VR
+  { id: "g9",  category: "VR",          title: "VR Zone — Full Immersion",            imageUrl: "https://images.unsplash.com/photo-1622979135225-d2ba269cf1ac?w=800&q=80" },
+  { id: "g10", category: "VR",          title: "VR Zone — Haptic Suit Session",       imageUrl: "https://images.unsplash.com/photo-1478416272538-5f7e51dc5400?w=800&q=80" },
+  // Tournaments
+  { id: "g11", category: "Tournaments", title: "NEXUS CS2 Open Cup — Finals",         imageUrl: "https://images.unsplash.com/photo-1542751110-97427bbecf20?w=800&q=80" },
+  { id: "g12", category: "Tournaments", title: "Dota 2 Championship — Stage",         imageUrl: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&q=80" },
+  { id: "g13", category: "Tournaments", title: "NEXUS Spring Cup — Award Ceremony",   imageUrl: "https://images.unsplash.com/photo-1560253023-3ec5d502959f?w=800&q=80" },
+  // Community
+  { id: "g14", category: "Community",   title: "Crew Night — Standard Zone",          imageUrl: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?w=800&q=80" },
+  { id: "g15", category: "Community",   title: "LAN Party — Saturday Madness",        imageUrl: "https://images.unsplash.com/photo-1583418855604-f9281d1fc8c5?w=800&q=80" },
+];
 
 const REVIEWS_EN = [
   { name: "VexPro",    rating: 5, text: "Pro Arena hits 240fps in CS2 flawlessly. This is what esports should feel like." },
@@ -42,26 +64,131 @@ const fadeUp = {
   show:   { opacity: 1, y: 0 },
 };
 
+/* ── Lightbox ───────────────────────────────────────────────── */
+function Lightbox({
+  items, index, onClose, onPrev, onNext,
+}: {
+  items: GalleryItem[]; index: number;
+  onClose: () => void; onPrev: () => void; onNext: () => void;
+}) {
+  const item = items[index];
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft")  onPrev();
+      if (e.key === "ArrowRight") onNext();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose, onPrev, onNext]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      {/* Close */}
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors z-10"
+      >
+        <X className="w-7 h-7" />
+      </button>
+
+      {/* Counter */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 text-xs text-white/50 tracking-widest z-10">
+        {index + 1} / {items.length}
+      </div>
+
+      {/* Prev */}
+      {index > 0 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          className="absolute left-4 top-1/2 -translate-y-1/2 text-white/60 hover:text-white transition-colors z-10 bg-black/40 rounded-full p-2"
+        >
+          <ChevronLeft className="w-7 h-7" />
+        </button>
+      )}
+
+      {/* Next */}
+      {index < items.length - 1 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          className="absolute right-4 top-1/2 -translate-y-1/2 text-white/60 hover:text-white transition-colors z-10 bg-black/40 rounded-full p-2"
+        >
+          <ChevronRight className="w-7 h-7" />
+        </button>
+      )}
+
+      {/* Image */}
+      <motion.div
+        key={item.id}
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.2 }}
+        className="max-w-5xl w-full max-h-[85vh] flex flex-col items-center"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={item.imageUrl}
+          alt={item.title}
+          className="max-w-full max-h-[75vh] object-contain rounded-lg shadow-2xl"
+          onError={(e) => { (e.target as HTMLImageElement).src = FALLBACK_IMG; }}
+        />
+        <div className="mt-3 text-center">
+          <div className="text-white font-medium text-base">{item.title}</div>
+          <div className="text-white/50 text-xs mt-1">{item.category}</div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 /* ── Landing ────────────────────────────────────────────────── */
 export function CyberLanding() {
   const t = useT();
   const REVIEWS = t("eyebrow_signal") === "// СИГНАЛ" ? REVIEWS_UK : REVIEWS_EN;
 
-  const zonesQ = useQuery({ queryKey: ["zones"],             queryFn: async () => { const { data } = await supabase.from("zones").select("*").eq("is_active", true).order("hourly_rate");       return (data ?? []) as Zone[]; } });
-  const wsQ    = useQuery({ queryKey: ["workstations"],      queryFn: async () => { const { data } = await supabase.from("workstations").select("*").eq("is_active", true);                      return (data ?? []) as Workstation[]; } });
-  const pkgQ   = useQuery({ queryKey: ["packages"],          queryFn: async () => { const { data } = await supabase.from("packages").select("*").eq("is_active", true).order("price");           return (data ?? []) as Package[]; } });
-  const tQ     = useQuery({ queryKey: ["tournaments-public"],queryFn: async () => { const { data } = await supabase.from("tournaments").select("*").in("status",["Upcoming","Registration Open"]).order("start_time"); return (data ?? []) as Tournament[]; } });
-  const gQ     = useQuery({ queryKey: ["gallery"],           queryFn: async () => { const { data } = await supabase.from("gallery").select("*").order("created_at",{ascending:false});           return (data ?? []) as GalleryItem[]; } });
+  const zonesQ = useQuery({ queryKey: ["zones"],             queryFn: () => apiClient.zones.list(true) });
+  const wsQ    = useQuery({ queryKey: ["workstations"],      queryFn: () => apiClient.zones.allWorkstations(true).catch(() => []) });
+  const pkgQ   = useQuery({ queryKey: ["packages"],          queryFn: () => apiClient.packages.list(true) });
+  const tQ     = useQuery({ queryKey: ["tournaments-public"],queryFn: () => apiClient.tournaments.list() });
+  const gQ     = useQuery<GalleryItem[]>({ queryKey: ["gallery"], queryFn: () => Promise.resolve(GALLERY_ITEMS), staleTime: Infinity });
 
-  const [bookings, setBookings] = useState<Booking[]>([]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const occupied = useMemo(() => new Set(bookings.map((b) => b.workstation_id)), [bookings]);
+  const occupied = new Set<string>();
 
   const [galleryFilter, setGalleryFilter] = useState("All");
-  const galleryCats   = ["All", ...Array.from(new Set((gQ.data ?? []).map((g) => g.category)))];
-  const galleryItems  = (gQ.data ?? []).filter((g) => galleryFilter === "All" || g.category === galleryFilter);
+  const [lightboxIdx,   setLightboxIdx]   = useState<number | null>(null);
+
+  const galleryCats  = ["All", ...Array.from(new Set((gQ.data ?? []).map((g) => g.category)))];
+  const galleryItems = (gQ.data ?? []).filter((g) => galleryFilter === "All" || g.category === galleryFilter);
+
+  // Map filtered index → global index for lightbox navigation
+  const openLightbox = useCallback((filteredIdx: number) => setLightboxIdx(filteredIdx), []);
+  const closeLightbox = useCallback(() => setLightboxIdx(null), []);
+  const prevLightbox  = useCallback(() => setLightboxIdx((i) => (i !== null && i > 0 ? i - 1 : i)), []);
+  const nextLightbox  = useCallback(() => setLightboxIdx((i) => (i !== null && i < galleryItems.length - 1 ? i + 1 : i)), [galleryItems.length]);
 
   return (
+    <>
+    {/* ── LIGHTBOX ─────────────────────────────────────────── */}
+    <AnimatePresence>
+      {lightboxIdx !== null && (
+        <Lightbox
+          items={galleryItems}
+          index={lightboxIdx}
+          onClose={closeLightbox}
+          onPrev={prevLightbox}
+          onNext={nextLightbox}
+        />
+      )}
+    </AnimatePresence>
+
     <main className="page-shell">
 
       {/* ── HERO ─────────────────────────────────────────────── */}
@@ -127,23 +254,16 @@ export function CyberLanding() {
             >
               <Card className="glass-card card-hover overflow-hidden h-full flex flex-col p-0">
                 <div className="aspect-video bg-muted relative overflow-hidden">
-                  {z.image_url && <img src={z.image_url} alt={z.name} className="w-full h-full object-cover opacity-75" loading="lazy" />}
+                  {z.imageUrl && <img src={z.imageUrl} alt={z.name} className="w-full h-full object-cover opacity-75" loading="lazy" />}
                   <div className="absolute inset-0 bg-gradient-to-t from-card/60 to-transparent" />
                   <span className={`absolute top-3 right-3 text-[10px] font-semibold px-2 py-0.5 rounded border ${TIER_COLORS[z.tier]}`}>{z.tier}</span>
                 </div>
                 <div className="p-5 flex flex-col flex-1">
                   <h3 className="font-semibold text-base text-foreground mb-1">{z.name}</h3>
                   <p className="text-sm text-muted-foreground mb-3 flex-1 line-clamp-2">{z.description}</p>
-                  {Object.keys(z.specs ?? {}).length > 0 && (
-                    <div className="text-xs font-mono text-muted-foreground space-y-0.5 mb-4 border-t border-border pt-3">
-                      {Object.entries(z.specs).slice(0, 3).map(([k, v]) => (
-                        <div key={k}><span className="text-primary/70">{k.toUpperCase()}</span>  {v}</div>
-                      ))}
-                    </div>
-                  )}
                   <div className="flex items-center justify-between mt-auto">
                     <div>
-                      <span className="text-xl font-bold text-foreground">{formatPrice(z.hourly_rate)}</span>
+                      <span className="text-xl font-bold text-foreground">{formatPrice(z.hourlyRate)}</span>
                       <span className="text-xs text-muted-foreground ml-1">{t("per_hour")}</span>
                     </div>
                     <a href="#seatmap">
@@ -172,7 +292,7 @@ export function CyberLanding() {
                 <p className="text-xs text-muted-foreground mt-1 mb-4 flex-1 min-h-[2.5rem]">{p.description}</p>
                 <div className="text-3xl font-bold text-foreground">{formatPrice(p.price)}</div>
                 <div className="text-xs font-mono text-muted-foreground mt-1 mb-4">
-                  {p.duration_minutes} {t("min_word")} · <span className="text-primary">+{p.xp_reward} XP</span>
+                  {p.durationMinutes} {t("min_word")} · <span className="text-primary">+{p.xpReward} XP</span>
                 </div>
                 <Link to="/auth">
                   <Button variant="outline" className="w-full text-sm border-border hover:border-primary/50 hover:text-primary">
@@ -194,7 +314,7 @@ export function CyberLanding() {
         </p>
         <div className="space-y-4">
           {zonesQ.data?.map((z) => {
-            const seats = (wsQ.data ?? []).filter((w) => w.zone_id === z.id);
+            const seats = (wsQ.data ?? []).filter((w) => w.zoneId === z.id);
             const avail = seats.filter((s) => !occupied.has(s.id)).length;
             return (
               <Card key={z.id} className="glass-card p-5">
@@ -238,12 +358,6 @@ export function CyberLanding() {
               viewport={{ once: true }} transition={{ delay: i * 0.06 }}
             >
               <Card className="glass-card card-hover overflow-hidden flex flex-col p-0">
-                {tn.image_url && (
-                  <div className="aspect-video overflow-hidden relative">
-                    <img src={tn.image_url} alt={tn.name} className="w-full h-full object-cover opacity-70" loading="lazy" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-card/80 to-transparent" />
-                  </div>
-                )}
                 <div className="p-5 flex flex-col flex-1">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-[10px] font-mono text-primary uppercase tracking-wider">{tn.game}</span>
@@ -252,15 +366,15 @@ export function CyberLanding() {
                     </Badge>
                   </div>
                   <h3 className="font-semibold text-foreground text-base mb-3">{tn.name}</h3>
-                  <div className="text-2xl font-bold text-amber-400 mb-1">{formatPrice(tn.prize_pool)}</div>
+                  <div className="text-2xl font-bold text-amber-400 mb-1">{formatPrice(tn.prizePool)}</div>
                   <div className="text-xs text-muted-foreground mb-3">{t("prize_pool")}</div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
                     <Users className="w-3 h-3" />
-                    {tn.current_participants} / {tn.max_participants}
+                    {tn.currentParticipants} / {tn.maxParticipants}
                   </div>
-                  <Progress value={(tn.current_participants / Math.max(1, tn.max_participants)) * 100} className="h-0.5 mb-3" />
+                  <Progress value={(tn.currentParticipants / Math.max(1, tn.maxParticipants)) * 100} className="h-0.5 mb-3" />
                   <div className="text-xs text-muted-foreground mb-4">
-                    {t("start_lbl")}: {new Date(tn.start_time).toLocaleString()}
+                    {t("start_lbl")}: {tn.startTime ? new Date(tn.startTime).toLocaleString() : "—"}
                   </div>
                   <Link to="/auth" className="mt-auto">
                     <Button size="sm" className="w-full bg-primary text-primary-foreground font-medium">
@@ -292,14 +406,37 @@ export function CyberLanding() {
           ))}
         </div>
         <div className="columns-1 sm:columns-2 lg:columns-3 gap-3 space-y-3">
-          {galleryItems.map((g) => (
-            <div key={g.id} className="relative break-inside-avoid overflow-hidden rounded border border-border group">
-              <img src={g.image_url} alt={g.title} className="w-full h-auto block group-hover:opacity-90 transition" loading="lazy" />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-card/95 to-transparent px-4 py-3 translate-y-full group-hover:translate-y-0 transition-transform">
-                <div className="text-sm font-medium text-foreground">{g.title}</div>
-                <div className="text-xs text-muted-foreground">{g.category}</div>
+          {galleryItems.map((g, idx) => (
+            <motion.div
+              key={g.id}
+              variants={fadeUp} initial="hidden" whileInView="show"
+              viewport={{ once: true }} transition={{ delay: idx * 0.04 }}
+              className="relative break-inside-avoid overflow-hidden rounded border border-border group cursor-zoom-in"
+              onClick={() => openLightbox(idx)}
+            >
+              {/* Image with error fallback */}
+              <img
+                src={g.imageUrl}
+                alt={g.title}
+                className="w-full h-auto block transition-transform duration-500 group-hover:scale-105"
+                loading="lazy"
+                onError={(e) => {
+                  const img = e.target as HTMLImageElement;
+                  if (img.src !== FALLBACK_IMG) img.src = FALLBACK_IMG;
+                }}
+              />
+
+              {/* Zoom icon */}
+              <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 rounded-full p-1.5">
+                <ZoomIn className="w-3.5 h-3.5 text-white" />
               </div>
-            </div>
+
+              {/* Caption */}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 to-transparent px-4 py-3 translate-y-full group-hover:translate-y-0 transition-transform duration-300">
+                <div className="text-sm font-medium text-white">{g.title}</div>
+                <div className="text-xs text-white/60">{g.category}</div>
+              </div>
+            </motion.div>
           ))}
         </div>
       </Section>
@@ -325,6 +462,7 @@ export function CyberLanding() {
       </Section>
 
     </main>
+    </>
   );
 }
 

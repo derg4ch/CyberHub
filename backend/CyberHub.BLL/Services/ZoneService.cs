@@ -53,4 +53,26 @@ public class ZoneService(IUnitOfWork uow) : IZoneService
         await uow.Zones.DeleteAsync(id);
         await uow.SaveChangesAsync();
     }
+
+    public async Task<IEnumerable<WorkstationDto>> GetAllWorkstationsAsync(bool? active = null)
+    {
+        var zones = await uow.Zones.GetAllAsync();
+        var allWs = new List<WorkstationDto>();
+        foreach (var zone in zones)
+        {
+            var z = await uow.Zones.GetWithWorkstationsAsync(zone.Id);
+            if (z is null) continue;
+            var ws = active == true ? z.Workstations.Where(w => w.IsActive) : z.Workstations;
+            allWs.AddRange(ws.Select(w => new WorkstationDto(w.Id, w.ZoneId, w.Name, w.PositionX, w.PositionY, w.IsActive)));
+        }
+        return allWs;
+    }
+
+    public async Task<IEnumerable<WorkstationDto>?> GetWorkstationsAsync(Guid zoneId)
+    {
+        var zone = await uow.Zones.GetWithWorkstationsAsync(zoneId);
+        if (zone is null) return null;
+        return zone.Workstations.Select(w => new WorkstationDto(
+            w.Id, w.ZoneId, w.Name, w.PositionX, w.PositionY, w.IsActive));
+    }
 }

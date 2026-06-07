@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,49 +17,48 @@ export const Route = createFileRoute("/auth")({
 function AuthPage() {
   const t   = useT();
   const nav = useNavigate();
+  const { user, login, register } = useAuth();
   const [loading, setLoading] = useState(false);
   const [li,  setLi]  = useState({ email: "", password: "" });
-  const [reg, setReg] = useState({ email: "", password: "", username: "", full_name: "", phone_number: "" });
+  const [reg, setReg] = useState({ email: "", password: "", username: "", fullName: "", phoneNumber: "" });
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => {
-      if (s) nav({ to: "/dashboard" });
-    });
-    supabase.auth.getUser().then(({ data }) => { if (data.user) nav({ to: "/dashboard" }); });
-    return () => subscription.unsubscribe();
-  }, [nav]);
+    if (user) nav({ to: "/dashboard" });
+  }, [user, nav]);
 
   async function handleLogin(e: React.FormEvent) {
-    e.preventDefault(); setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword(li);
-    setLoading(false);
-    if (error) return toast.error(t("auth_denied") + ": " + error.message);
-    toast.success(t("auth_granted"));
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await login(li.email, li.password);
+      toast.success(t("auth_granted"));
+      nav({ to: "/dashboard" });
+    } catch (err: unknown) {
+      toast.error(t("auth_denied") + ": " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
     if (loading) return;
     setLoading(true);
-    const { data, error } = await supabase.auth.signUp({
-      email: reg.email, password: reg.password,
-      options: {
-        emailRedirectTo: window.location.origin + "/dashboard",
-        data: { username: reg.username, full_name: reg.full_name, phone_number: reg.phone_number },
-      },
-    });
-    if (error) { setLoading(false); return toast.error(t("auth_reg_failed") + ": " + error.message); }
-    if (!data.session) await supabase.auth.signInWithPassword({ email: reg.email, password: reg.password });
-    setLoading(false);
-    toast.success(t("auth_welcome") + ", " + reg.username);
-  }
-
-  async function handleGoogle() {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.origin + "/dashboard" },
-    });
-    if (error) toast.error(t("auth_oauth_err") + ": " + error.message);
+    try {
+      await register({
+        email:       reg.email,
+        password:    reg.password,
+        username:    reg.username,
+        fullName:    reg.fullName || undefined,
+        phoneNumber: reg.phoneNumber || undefined,
+      });
+      toast.success(t("auth_welcome") + ", " + reg.username);
+      nav({ to: "/dashboard" });
+    } catch (err: unknown) {
+      toast.error(t("auth_reg_failed") + ": " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -107,8 +106,8 @@ function AuthPage() {
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground">{t("auth_full_name")}</Label>
-                <Input value={reg.full_name}
-                  onChange={(e) => setReg({ ...reg, full_name: e.target.value })} className="mt-1" />
+                <Input value={reg.fullName}
+                  onChange={(e) => setReg({ ...reg, fullName: e.target.value })} className="mt-1" />
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground">{t("auth_email")}</Label>
@@ -117,8 +116,8 @@ function AuthPage() {
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground">{t("auth_phone")}</Label>
-                <Input value={reg.phone_number}
-                  onChange={(e) => setReg({ ...reg, phone_number: e.target.value })} className="mt-1" />
+                <Input value={reg.phoneNumber}
+                  onChange={(e) => setReg({ ...reg, phoneNumber: e.target.value })} className="mt-1" />
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground">{t("auth_password")}</Label>
@@ -131,16 +130,6 @@ function AuthPage() {
             </form>
           </TabsContent>
         </Tabs>
-
-        <div className="my-5 flex items-center gap-3">
-          <div className="flex-1 h-px bg-border" />
-          <span className="text-xs text-muted-foreground">{t("auth_or")}</span>
-          <div className="flex-1 h-px bg-border" />
-        </div>
-
-        <Button variant="outline" onClick={handleGoogle} className="w-full border-border hover:border-primary/40">
-          {t("auth_google")}
-        </Button>
 
         <div className="mt-5 text-center">
           <Link to="/" className="text-xs text-muted-foreground hover:text-foreground transition-colors">

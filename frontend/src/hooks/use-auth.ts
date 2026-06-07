@@ -1,59 +1,65 @@
-import { useEffect, useState } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { useEffect, useState, useCallback } from "react";
+import { apiClient, tokenStore, type UserDto } from "@/lib/api-client";
 
-export type Profile = {
-  id: string;
-  username: string | null;
-  full_name: string | null;
-  phone_number: string | null;
-  avatar_url: string | null;
-  xp_points: number;
-  level: number;
-  total_sessions: number;
-  total_hours: number;
-};
+export type Profile = UserDto;
 
 export function useAuth() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [user,    setUser]    = useState<UserDto | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_evt, s) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      if (s?.user) {
-        setTimeout(() => loadProfileAndRole(s.user.id), 0);
-      } else {
-        setProfile(null);
-        setIsAdmin(false);
-      }
-    });
+  const isAdmin = user?.role === "admin";
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      if (data.session?.user) {
-        loadProfileAndRole(data.session.user.id).finally(() => setLoading(false));
-      } else {
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+  const load = useCallback(async () => {
+    const token = tokenStore.get();
+    if (!token) { setLoading(false); return; }
+    try {
+      const me = await apiClient.auth.me();
+      setUser(me);
+    } catch {
+      tokenStore.clear();
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  async function loadProfileAndRole(uid: string) {
-    const [{ data: p }, { data: r }] = await Promise.all([
-      supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
-      supabase.from("user_roles").select("role").eq("user_id", uid),
-    ]);
-    setProfile(p as Profile | null);
-    setIsAdmin((r ?? []).some((x: { role: string }) => x.role === "admin"));
+  useEffect(() => { load(); }, [load]);
+
+  async function login(email: string, password: string) {
+    const res = await apiClient.auth.login(email, password);
+    tokenStore.set(res.token);
+    setUser(res.user);
+    return res;
   }
 
-  return { session, user, profile, isAdmin, loading, reload: () => user && loadProfileAndRole(user.id) };
+  async function register(data: {
+    email: string;
+    password: string;
+    username: string;
+    fullName?: string;
+    phoneNumber?: string;
+  }) {
+    const res = await apiClient.auth.register(data);
+    tokenStore.set(res.token);
+    setUser(res.user);
+    return res;
+  }
+
+  function logout() {
+    tokenStore.clear();
+    setUser(null);
+  }
+
+  return {
+    user,
+    profile: user,
+    isAdmin,
+    loading,
+    login,
+    register,
+    logout,
+    reload: load,
+    // compatibility shim
+    session: user ? { user } : null,
+  };
 }

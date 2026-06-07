@@ -1,8 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { apiClient, type ZoneDto, type PackageDto, type TournamentDto, type BookingDto, type TopZoneDto, type RevenueForecastPoint, type HeatmapCell } from "@/lib/api-client";
 import { SiteHeader } from "@/components/site-header";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,31 +21,33 @@ import {
 } from "recharts";
 import { useT } from "@/lib/i18n";
 import { Pencil, Plus, Shield, ShieldOff, Trash2, FileDown, TrendingUp } from "lucide-react";
-import { apiClient, type RevenueForecastPoint, type TopZoneDto, type HeatmapCell } from "@/lib/api-client";
 
-export const Route = createFileRoute("/admin")({
-  head: () => ({ meta: [{ title: "NEXUS // ADMIN OPS" }] }),
-  component: AdminPage,
-});
-
-const STATUSES = ["Pending", "Confirmed", "Active", "Completed", "No-Show", "Cancelled"] as const;
-const TIERS = ["Standard", "Pro", "VIP", "Streaming", "VR"] as const;
-const PKG_CATEGORIES = ["Hourly", "Daily", "Night", "Weekly", "Tournament", "VIP"] as const;
-const TOURNAMENT_STATUSES = ["Upcoming", "Registration", "Live", "Completed", "Cancelled"] as const;
+const STATUSES        = ["Pending", "Confirmed", "Active", "Completed", "No-Show", "Cancelled"] as const;
+const TIERS           = ["Standard", "Pro", "VIP", "Streaming", "VR"] as const;
+const PKG_CATEGORIES  = ["Hourly", "Daily", "Night", "Weekly", "Tournament", "VIP"] as const;
+const TOUR_STATUSES   = ["Upcoming", "Registration Open", "In Progress", "Completed", "Cancelled"] as const;
 const TIER_COLORS: Record<string, string> = {
   Standard: "#38BDF8", Pro: "#7B2FBE", VIP: "#FBBF24", Streaming: "#00D4FF", VR: "#FF0066",
 };
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+/* ── Route ────────────────────────────────────────────────────────────────── */
+export const Route = createFileRoute("/admin")({
+  head: () => ({ meta: [{ title: "NEXUS // ADMIN OPS" }] }),
+  component: AdminPage,
+});
+
 function AdminPage() {
   const t = useT();
   const nav = useNavigate();
   const { user, isAdmin, loading } = useAuth();
+
   useEffect(() => {
     if (loading) return;
     if (!user) { nav({ to: "/auth" }); return; }
     if (!isAdmin) { toast.error(t("admin_access_denied")); nav({ to: "/dashboard" }); }
   }, [loading, user, isAdmin, nav, t]);
+
   if (loading || !user || !isAdmin)
     return <div className="min-h-screen grid place-items-center text-primary font-display">{t("admin_authorizing")}</div>;
 
@@ -62,90 +64,22 @@ function AdminPage() {
             {new Date().toLocaleDateString("uk-UA", { weekday: "short", day: "2-digit", month: "short" })}
           </div>
         </div>
+
         <Tabs defaultValue="live" className="w-full">
           <TabsList className="bg-muted flex flex-wrap h-auto gap-0.5">
             {["live", "analytics", "zones", "packages", "tournaments", "users"].map((tab) => (
-              <TabsTrigger key={tab} value={tab} className="font-mono text-xs tracking-widest uppercase">
-                {tab}
-              </TabsTrigger>
+              <TabsTrigger key={tab} value={tab} className="font-mono text-xs tracking-widest uppercase">{tab}</TabsTrigger>
             ))}
           </TabsList>
-          <TabsContent value="live" className="mt-6"><LiveMonitor /></TabsContent>
-          <TabsContent value="analytics" className="mt-6"><Analytics /></TabsContent>
-          <TabsContent value="zones" className="mt-6"><ZonesAdmin /></TabsContent>
-          <TabsContent value="packages" className="mt-6"><PackagesAdmin /></TabsContent>
+          <TabsContent value="live"        className="mt-6"><LiveMonitor /></TabsContent>
+          <TabsContent value="analytics"   className="mt-6"><Analytics /></TabsContent>
+          <TabsContent value="zones"       className="mt-6"><ZonesAdmin /></TabsContent>
+          <TabsContent value="packages"    className="mt-6"><PackagesAdmin /></TabsContent>
           <TabsContent value="tournaments" className="mt-6"><TournamentsAdmin /></TabsContent>
-          <TabsContent value="users" className="mt-6"><UsersAdmin /></TabsContent>
+          <TabsContent value="users"       className="mt-6"><UsersAdmin /></TabsContent>
         </Tabs>
       </main>
     </>
-  );
-}
-
-/* ── LIVE MONITOR ─────────────────────────────────────────────────────── */
-function LiveMonitor() {
-  const t = useT();
-  const qc = useQueryClient();
-  const q = useQuery({
-    queryKey: ["all-bookings-today"],
-    queryFn: async () => {
-      const today = new Date(); today.setHours(0, 0, 0, 0);
-      const { data } = await supabase
-        .from("bookings")
-        .select("*, zones(name), workstations(name), packages(name), profiles!bookings_user_id_fkey(username)")
-        .gte("start_time", today.toISOString())
-        .order("start_time");
-      return data ?? [];
-    },
-  });
-
-  useEffect(() => {
-    const ch = supabase.channel("admin-bk")
-      .on("postgres_changes", { event: "*", schema: "public", table: "bookings" }, () =>
-        qc.invalidateQueries({ queryKey: ["all-bookings-today"] }))
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [qc]);
-
-  async function setStatus(id: string, status: string) {
-    const { error } = await supabase.from("bookings").update({ status: status as typeof STATUSES[number] }).eq("id", id);
-    if (error) return toast.error(error.message);
-    toast.success(t("admin_status_updated"));
-  }
-
-  const revenue = (q.data ?? []).filter((b: any) => b.status === "Completed").reduce((s: number, b: any) => s + Number(b.total_price), 0);
-  const activeCount = (q.data ?? []).filter((b: any) => b.status === "Active").length;
-
-  return (
-    <div className="space-y-5">
-      <div className="grid sm:grid-cols-3 gap-3">
-        <StatCard label={t("admin_today_rev")} value={formatPrice(revenue)} color="text-primary" />
-        <StatCard label={t("admin_active_now")} value={String(activeCount)} color="text-green-400" />
-        <StatCard label={t("admin_total")} value={String(q.data?.length ?? 0)} color="text-foreground" />
-      </div>
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        {STATUSES.map((st) => (
-          <div key={st}>
-            <div className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2 border-b border-border pb-1">{st}</div>
-            <div className="space-y-2 min-h-[60px]">
-              {(q.data ?? []).filter((b: any) => b.status === st).map((b: any) => (
-                <Card key={b.id} className="glass-card p-3 text-xs">
-                  <div className="font-display text-primary text-xs">{b.profiles?.username ?? "—"}</div>
-                  <div className="text-muted-foreground">{b.zones?.name} · {b.workstations?.name}</div>
-                  <div className="font-mono text-muted-foreground text-[10px]">{new Date(b.start_time).toLocaleTimeString()}</div>
-                  <Select value={b.status} onValueChange={(v) => setStatus(b.id, v)}>
-                    <SelectTrigger className="mt-2 h-6 text-[10px] bg-background border-primary/30">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>{STATUSES.map((s) => <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Card>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -158,62 +92,145 @@ function StatCard({ label, value, color }: { label: string; value: string; color
   );
 }
 
-/* ── ANALYTICS ────────────────────────────────────────────────────────── */
+/* ── LIVE MONITOR ─────────────────────────────────────────────────────────── */
+function LiveMonitor() {
+  const t  = useT();
+  const qc = useQueryClient();
+  const q  = useQuery({
+    queryKey: ["admin-bookings-today"],
+    queryFn:  () => apiClient.bookings.today(),
+    refetchInterval: 30_000,
+  });
+
+  async function setStatus(id: string, status: string) {
+    try {
+      await apiClient.bookings.setStatus(id, status);
+      toast.success(t("admin_status_updated"));
+      qc.invalidateQueries({ queryKey: ["admin-bookings-today"] });
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
+  }
+
+  const bookings    = q.data ?? [];
+  const revenue     = bookings.filter((b) => b.status === "Completed").reduce((s, b) => s + b.totalPrice, 0);
+  const activeCount = bookings.filter((b) => b.status === "Active").length;
+
+  return (
+    <div className="space-y-5">
+      <div className="grid sm:grid-cols-3 gap-3">
+        <StatCard label={t("admin_today_rev")}  value={formatPrice(revenue)}           color="text-primary" />
+        <StatCard label={t("admin_active_now")}  value={String(activeCount)}            color="text-green-400" />
+        <StatCard label={t("admin_total")}        value={String(bookings.length)}        color="text-foreground" />
+      </div>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+        {STATUSES.map((st) => (
+          <div key={st}>
+            <div className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2 border-b border-border pb-1">{st}</div>
+            <div className="space-y-2 min-h-[60px]">
+              {bookings.filter((b) => b.status === st).map((b) => (
+                <Card key={b.id} className="glass-card p-3 text-xs">
+                  <div className="font-display text-primary text-xs">{b.username ?? "—"}</div>
+                  <div className="text-muted-foreground">{b.zoneName} · {b.workstationName}</div>
+                  <div className="font-mono text-muted-foreground text-[10px]">{new Date(b.startTime).toLocaleTimeString()}</div>
+                  <Select value={b.status} onValueChange={(v) => setStatus(b.id, v)}>
+                    <SelectTrigger className="mt-2 h-6 text-[10px] bg-background border-primary/30"><SelectValue /></SelectTrigger>
+                    <SelectContent>{STATUSES.map((s) => <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Card>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── ANALYTICS ────────────────────────────────────────────────────────────── */
 function Analytics() {
-  const t = useT();
+  const t           = useT();
   const chartAreaRef = useRef<HTMLDivElement>(null);
 
-  const q = useQuery({
-    queryKey: ["analytics"],
-    queryFn: async () => {
-      const since = new Date(); since.setDate(since.getDate() - 14);
-      const { data } = await supabase.from("bookings").select("*, zones(name, tier), packages(name)").gte("created_at", since.toISOString());
-      return data ?? [];
-    },
+  // Raw bookings for local computed charts (last 14 days)
+  const since14 = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 14); return d.toISOString(); }, []);
+  const rawQ = useQuery({
+    queryKey: ["admin-bookings-14"],
+    queryFn:  () => apiClient.bookings.all({ from: since14, to: new Date().toISOString() }),
   });
 
-  const forecastQ = useQuery({
-    queryKey: ["analytics-forecast"],
-    queryFn: () => apiClient.analytics.revenueForecast(),
-    retry: false,
-  });
+  const forecastQ  = useQuery({ queryKey: ["analytics-forecast"],  queryFn: () => apiClient.analytics.revenueForecast(), retry: false });
+  const topZonesQ  = useQuery({ queryKey: ["analytics-top-zones"], queryFn: () => apiClient.analytics.topZones(),        retry: false });
+  const heatmapQ   = useQuery({ queryKey: ["analytics-heatmap"],   queryFn: () => apiClient.analytics.heatmap(),         retry: false });
 
-  const topZonesQ = useQuery({
-    queryKey: ["analytics-top-zones"],
-    queryFn: () => apiClient.analytics.topZones(),
-    retry: false,
-  });
-
-  const heatmapQ = useQuery({
-    queryKey: ["analytics-heatmap"],
-    queryFn: () => apiClient.analytics.heatmap(),
-    retry: false,
-  });
-
-  const data = q.data ?? [];
+  const data = rawQ.data ?? [];
 
   const revByZone = useMemo(() => {
     const m: Record<string, number> = {};
-    data.forEach((b: any) => { const n = b.zones?.name ?? "—"; m[n] = (m[n] ?? 0) + Number(b.total_price); });
+    data.forEach((b) => { const n = b.zoneName ?? "—"; m[n] = (m[n] ?? 0) + b.totalPrice; });
     return Object.entries(m).map(([name, value]) => ({ name, value }));
   }, [data]);
 
   const dailyBookings = useMemo(() => {
     const m: Record<string, number> = {};
     for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); m[d.toISOString().slice(5, 10)] = 0; }
-    data.forEach((b: any) => { const k = new Date(b.created_at).toISOString().slice(5, 10); if (k in m) m[k]++; });
+    data.forEach((b) => { const k = new Date(b.createdAt).toISOString().slice(5, 10); if (k in m) m[k]++; });
     return Object.entries(m).map(([date, count]) => ({ date, count }));
   }, [data]);
 
   const byTier = useMemo(() => {
     const m: Record<string, number> = {};
-    data.forEach((b: any) => { const tier = b.zones?.tier ?? "—"; m[tier] = (m[tier] ?? 0) + 1; });
+    data.forEach((b) => { const tier = b.zoneTier ?? "—"; m[tier] = (m[tier] ?? 0) + 1; });
     return Object.entries(m).map(([name, value]) => ({ name, value }));
   }, [data]);
 
+  const heatmapData = useMemo<HeatmapCell[]>(() => {
+    if (heatmapQ.data?.length) return heatmapQ.data;
+    const m: Record<string, number> = {};
+    data.forEach((b) => {
+      const dt  = new Date(b.startTime);
+      const key = `${dt.getDay()}-${dt.getHours()}`;
+      m[key] = (m[key] ?? 0) + 1;
+    });
+    return Object.entries(m).map(([k, count]) => {
+      const [d, h] = k.split("-").map(Number);
+      return { dayOfWeek: d, hour: h, count };
+    });
+  }, [heatmapQ.data, data]);
+
+  const maxHeat = useMemo(() => Math.max(1, ...heatmapData.map((c) => c.count)), [heatmapData]);
+
+  const topZonesDisplay = useMemo<TopZoneDto[]>(() => {
+    if (topZonesQ.data?.length) return topZonesQ.data;
+    const m: Record<string, TopZoneDto> = {};
+    data.forEach((b) => {
+      const n = b.zoneName ?? "—";
+      if (!m[n]) m[n] = { zoneName: n, tier: b.zoneTier ?? "—", bookingCount: 0, totalRevenue: 0 };
+      m[n].bookingCount++;
+      m[n].totalRevenue += b.totalPrice;
+    });
+    return Object.values(m).sort((a, b) => b.bookingCount - a.bookingCount).slice(0, 5);
+  }, [topZonesQ.data, data]);
+
+  const forecastDisplay = useMemo<RevenueForecastPoint[]>(() => {
+    if (forecastQ.data?.length) return forecastQ.data;
+    const m: Record<string, number> = {};
+    for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); m[d.toISOString().slice(5, 10)] = 0; }
+    data.filter((b) => b.status === "Completed").forEach((b) => {
+      const k = new Date(b.createdAt).toISOString().slice(5, 10);
+      if (k in m) m[k] += b.totalPrice;
+    });
+    const avg = Object.values(m).reduce((a, b) => a + b, 0) / (Object.keys(m).length || 1);
+    const hist: RevenueForecastPoint[] = Object.entries(m).map(([date, actual]) => ({ date, actual, forecast: null }));
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(); d.setDate(d.getDate() + i);
+      hist.push({ date: d.toISOString().slice(5, 10), actual: null, forecast: Math.round(avg) });
+    }
+    return hist;
+  }, [forecastQ.data, data]);
+
   async function exportPDF() {
-    const { default: jsPDF } = await import("jspdf");
-    const { default: autoTable } = await import("jspdf-autotable");
+    const { default: jsPDF }       = await import("jspdf");
+    const { default: autoTable }   = await import("jspdf-autotable");
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
     doc.setFillColor(3, 4, 10);
@@ -225,129 +242,49 @@ function Analytics() {
     doc.setFontSize(10);
     doc.setTextColor(107, 127, 163);
     doc.text(`Analytics Report — ${new Date().toLocaleDateString("uk-UA")}`, 14, 28);
-
     doc.setDrawColor(0, 212, 255);
     doc.setLineWidth(0.3);
     doc.line(14, 31, 196, 31);
 
     let y = 40;
-    doc.setTextColor(0, 212, 255);
-    doc.setFontSize(13);
-    doc.text("Revenue by Zone (last 14 days)", 14, y);
-    y += 8;
-    autoTable(doc, {
-      startY: y,
-      head: [["Zone", "Revenue (UAH)"]],
-      body: revByZone.map((r) => [r.name, `${r.value.toFixed(2)}`]),
-      theme: "grid",
-      headStyles: { fillColor: [0, 50, 60], textColor: [0, 212, 255], fontStyle: "bold" },
-      bodyStyles: { fillColor: [13, 15, 26], textColor: [232, 244, 248] },
-      alternateRowStyles: { fillColor: [20, 24, 40] },
-      margin: { left: 14, right: 14 },
-    });
+    const tableOpts = {
+      theme: "grid" as const,
+      headStyles:          { fillColor: [0, 50, 60] as [number, number, number], textColor: [0, 212, 255] as [number, number, number], fontStyle: "bold" as const },
+      bodyStyles:          { fillColor: [13, 15, 26] as [number, number, number], textColor: [232, 244, 248] as [number, number, number] },
+      alternateRowStyles:  { fillColor: [20, 24, 40] as [number, number, number] },
+      margin:              { left: 14, right: 14 },
+    };
+
+    doc.setTextColor(0, 212, 255); doc.setFontSize(13);
+    doc.text("Revenue by Zone (last 14 days)", 14, y); y += 8;
+    autoTable(doc, { startY: y, head: [["Zone", "Revenue (UAH)"]], body: revByZone.map((r) => [r.name, r.value.toFixed(2)]), ...tableOpts });
     y = (doc as any).lastAutoTable.finalY + 10;
 
-    doc.setTextColor(0, 212, 255);
-    doc.setFontSize(13);
-    doc.text("Bookings — last 14 days", 14, y);
-    y += 8;
-    autoTable(doc, {
-      startY: y,
-      head: [["Date", "Bookings"]],
-      body: dailyBookings.map((r) => [r.date, String(r.count)]),
-      theme: "grid",
-      headStyles: { fillColor: [0, 50, 60], textColor: [0, 212, 255], fontStyle: "bold" },
-      bodyStyles: { fillColor: [13, 15, 26], textColor: [232, 244, 248] },
-      alternateRowStyles: { fillColor: [20, 24, 40] },
-      margin: { left: 14, right: 14 },
-    });
+    doc.setTextColor(0, 212, 255); doc.setFontSize(13);
+    doc.text("Daily Bookings (last 14 days)", 14, y); y += 8;
+    autoTable(doc, { startY: y, head: [["Date", "Bookings"]], body: dailyBookings.map((r) => [r.date, String(r.count)]), ...tableOpts });
     y = (doc as any).lastAutoTable.finalY + 10;
 
-    if (topZonesQ.data && topZonesQ.data.length > 0) {
-      if (y > 230) { doc.addPage(); doc.setFillColor(3, 4, 10); doc.rect(0, 0, 210, 297, "F"); y = 20; }
-      doc.setTextColor(0, 212, 255);
-      doc.setFontSize(13);
-      doc.text("Top 5 Zones by Bookings (last 30 days)", 14, y);
-      y += 8;
-      autoTable(doc, {
-        startY: y,
-        head: [["#", "Zone", "Tier", "Bookings", "Revenue (UAH)"]],
-        body: topZonesQ.data.map((r, i) => [String(i + 1), r.zoneName, r.tier, String(r.bookingCount), r.totalRevenue.toFixed(2)]),
-        theme: "grid",
-        headStyles: { fillColor: [0, 50, 60], textColor: [0, 212, 255], fontStyle: "bold" },
-        bodyStyles: { fillColor: [13, 15, 26], textColor: [232, 244, 248] },
-        alternateRowStyles: { fillColor: [20, 24, 40] },
-        margin: { left: 14, right: 14 },
-      });
+    if (topZonesDisplay.length > 0) {
+      if (y > 220) { doc.addPage(); doc.setFillColor(3, 4, 10); doc.rect(0, 0, 210, 297, "F"); y = 20; }
+      doc.setTextColor(0, 212, 255); doc.setFontSize(13);
+      doc.text("Top-5 Zones by Bookings", 14, y); y += 8;
+      autoTable(doc, { startY: y, head: [["#", "Zone", "Tier", "Bookings", "Revenue (UAH)"]], body: topZonesDisplay.map((r, i) => [String(i + 1), r.zoneName, r.tier, String(r.bookingCount), r.totalRevenue.toFixed(2)]), ...tableOpts });
     }
 
     doc.save(`nexus-report-${new Date().toISOString().slice(0, 10)}.pdf`);
     toast.success("PDF exported");
   }
 
-  const heatmapData = useMemo(() => {
-    if (heatmapQ.data && heatmapQ.data.length > 0) return heatmapQ.data;
-    const m: Record<string, number> = {};
-    data.forEach((b: any) => {
-      const dt = new Date(b.created_at ?? b.start_time);
-      const key = `${dt.getDay()}-${dt.getHours()}`;
-      m[key] = (m[key] ?? 0) + 1;
-    });
-    const cells: HeatmapCell[] = [];
-    Object.entries(m).forEach(([k, count]) => {
-      const [d, h] = k.split("-").map(Number);
-      cells.push({ dayOfWeek: d, hour: h, count });
-    });
-    return cells;
-  }, [heatmapQ.data, data]);
-
-  const maxHeat = useMemo(() => Math.max(1, ...heatmapData.map((c) => c.count)), [heatmapData]);
-
-  const topZonesDisplay = useMemo<TopZoneDto[]>(() => {
-    if (topZonesQ.data && topZonesQ.data.length > 0) return topZonesQ.data;
-    const m: Record<string, { zoneName: string; tier: string; bookingCount: number; totalRevenue: number }> = {};
-    data.forEach((b: any) => {
-      const n = b.zones?.name ?? "—";
-      if (!m[n]) m[n] = { zoneName: n, tier: b.zones?.tier ?? "—", bookingCount: 0, totalRevenue: 0 };
-      m[n].bookingCount++;
-      m[n].totalRevenue += Number(b.total_price ?? 0);
-    });
-    return Object.values(m).sort((a, b) => b.bookingCount - a.bookingCount).slice(0, 5);
-  }, [topZonesQ.data, data]);
-
-  const forecastDisplay = useMemo<RevenueForecastPoint[]>(() => {
-    if (forecastQ.data && forecastQ.data.length > 0) return forecastQ.data;
-    const m: Record<string, number> = {};
-    for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); m[d.toISOString().slice(5, 10)] = 0; }
-    data.filter((b: any) => b.status === "Completed").forEach((b: any) => {
-      const k = new Date(b.created_at).toISOString().slice(5, 10);
-      if (k in m) m[k] += Number(b.total_price);
-    });
-    const vals = Object.values(m);
-    const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-    const hist: RevenueForecastPoint[] = Object.entries(m).map(([date, actual]) => ({ date, actual, forecast: null }));
-    for (let i = 1; i <= 7; i++) {
-      const d = new Date(); d.setDate(d.getDate() + i);
-      hist.push({ date: d.toISOString().slice(5, 10), actual: null, forecast: Math.round(avg) });
-    }
-    return hist;
-  }, [forecastQ.data, data]);
-
   return (
     <div className="space-y-6" ref={chartAreaRef}>
       <div className="flex justify-between items-center">
         <h2 className="font-display text-xl text-primary">{t("admin_analytics")}</h2>
-        <Button
-          onClick={exportPDF}
-          className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/40 font-mono text-xs tracking-widest"
-          variant="outline"
-        >
-          <FileDown className="w-3.5 h-3.5 mr-1.5" />
-          EXPORT PDF
+        <Button onClick={exportPDF} variant="outline" className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/40 font-mono text-xs tracking-widest">
+          <FileDown className="w-3.5 h-3.5 mr-1.5" />EXPORT PDF
         </Button>
       </div>
 
-      {/* Existing charts row */}
       <div className="grid md:grid-cols-2 gap-4">
         <Card className="glass-card p-4">
           <div className="font-mono text-xs text-primary mb-3 tracking-wider">{t("admin_rev_by_zone")}</div>
@@ -388,14 +325,13 @@ function Analytics() {
         </Card>
       </div>
 
-      {/* ── NEW: Revenue Forecast ──────────────────────────────────── */}
+      {/* Revenue Forecast */}
       <Card className="glass-card p-4">
         <div className="flex items-center gap-2 mb-1">
           <TrendingUp className="w-3.5 h-3.5 text-accent" />
           <div className="font-mono text-xs text-primary tracking-wider">REVENUE FORECAST — NEXT 7 DAYS</div>
-          {forecastQ.isError && <span className="text-[10px] text-amber-400 font-mono ml-auto">Supabase fallback</span>}
         </div>
-        <div className="text-[10px] text-muted-foreground font-mono mb-3">Simple moving average based on last 7 days</div>
+        <div className="text-[10px] text-muted-foreground font-mono mb-3">Simple moving average based on last 14 days</div>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={forecastDisplay}>
             <CartesianGrid stroke="#1A1F35" strokeDasharray="3 3" />
@@ -407,12 +343,12 @@ function Analytics() {
           </ComposedChart>
         </ResponsiveContainer>
         <div className="flex gap-4 mt-2">
-          <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-primary" /><span className="text-[10px] font-mono text-muted-foreground">Actual revenue</span></div>
-          <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-orange-500 border-dashed" style={{ borderTop: "2px dashed #FF6B00", height: 0 }} /><span className="text-[10px] font-mono text-muted-foreground">Forecast</span></div>
+          <span className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground"><span className="w-6 h-0.5 bg-primary inline-block" />Actual</span>
+          <span className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground"><span className="w-6 h-0.5 bg-orange-500 inline-block border-t-2 border-dashed border-orange-500" />Forecast</span>
         </div>
       </Card>
 
-      {/* ── NEW: Top-5 Zones ──────────────────────────────────────── */}
+      {/* Top-5 Zones */}
       <Card className="glass-card p-4">
         <div className="font-mono text-xs text-primary mb-3 tracking-wider">TOP-5 ZONES BY BOOKINGS (30 days)</div>
         {topZonesDisplay.length === 0
@@ -421,21 +357,20 @@ function Analytics() {
             <div className="overflow-x-auto">
               <table className="w-full text-xs font-mono">
                 <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left py-2 px-3 text-muted-foreground font-normal">#</th>
-                    <th className="text-left py-2 px-3 text-muted-foreground font-normal">Zone</th>
-                    <th className="text-left py-2 px-3 text-muted-foreground font-normal">Tier</th>
-                    <th className="text-right py-2 px-3 text-muted-foreground font-normal">Bookings</th>
-                    <th className="text-right py-2 px-3 text-muted-foreground font-normal">Revenue</th>
+                  <tr className="border-b border-border text-muted-foreground font-normal">
+                    <th className="text-left py-2 px-3 font-normal">#</th>
+                    <th className="text-left py-2 px-3 font-normal">Zone</th>
+                    <th className="text-left py-2 px-3 font-normal">Tier</th>
+                    <th className="text-right py-2 px-3 font-normal">Bookings</th>
+                    <th className="text-right py-2 px-3 font-normal">Revenue</th>
                     <th className="py-2 px-3" />
                   </tr>
                 </thead>
                 <tbody>
                   {topZonesDisplay.map((z, i) => {
-                    const maxBookings = topZonesDisplay[0].bookingCount;
-                    const pct = maxBookings > 0 ? (z.bookingCount / maxBookings) * 100 : 0;
+                    const pct = (z.bookingCount / (topZonesDisplay[0].bookingCount || 1)) * 100;
                     return (
-                      <tr key={z.zoneName} className="border-b border-border/50 hover:bg-primary/5 transition-colors">
+                      <tr key={z.zoneName} className="border-b border-border/50 hover:bg-primary/5">
                         <td className="py-2.5 px-3 text-muted-foreground">{i + 1}</td>
                         <td className="py-2.5 px-3 text-foreground font-display text-xs">{z.zoneName}</td>
                         <td className="py-2.5 px-3">
@@ -444,10 +379,10 @@ function Analytics() {
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-right text-primary">{z.bookingCount}</td>
-                        <td className="py-2.5 px-3 text-right text-foreground">{formatPrice(z.totalRevenue)}</td>
+                        <td className="py-2.5 px-3 text-right">{formatPrice(z.totalRevenue)}</td>
                         <td className="py-2.5 px-3 w-24">
                           <div className="h-1 bg-muted rounded-full overflow-hidden">
-                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: TIER_COLORS[z.tier] ?? "#00D4FF" }} />
+                            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: TIER_COLORS[z.tier] ?? "#00D4FF" }} />
                           </div>
                         </td>
                       </tr>
@@ -459,7 +394,7 @@ function Analytics() {
           )}
       </Card>
 
-      {/* ── NEW: Activity Heatmap ─────────────────────────────────── */}
+      {/* Heatmap */}
       <Card className="glass-card p-4">
         <div className="font-mono text-xs text-primary mb-1 tracking-wider">ACTIVITY HEATMAP — HOUR × DAY</div>
         <div className="text-[10px] text-muted-foreground font-mono mb-4">Busiest periods over the last 30 days</div>
@@ -474,14 +409,11 @@ function Analytics() {
               <div key={day} className="flex items-center gap-1 mb-0.5">
                 <div className="w-9 text-[10px] font-mono text-muted-foreground shrink-0 text-right pr-1">{day}</div>
                 {Array.from({ length: 24 }, (_, hour) => {
-                  const cell = heatmapData.find((c) => c.dayOfWeek === dayIdx && c.hour === hour);
+                  const cell      = heatmapData.find((c) => c.dayOfWeek === dayIdx && c.hour === hour);
                   const intensity = cell ? cell.count / maxHeat : 0;
-                  const alpha = 0.06 + intensity * 0.9;
                   return (
-                    <div
-                      key={hour}
-                      className="w-5 h-5 rounded-sm shrink-0 cursor-default transition-all"
-                      style={{ background: `rgba(0, 212, 255, ${alpha})` }}
+                    <div key={hour} className="w-5 h-5 rounded-sm shrink-0"
+                      style={{ background: `rgba(0,212,255,${0.06 + intensity * 0.9})` }}
                       title={`${day} ${hour}:00 — ${cell?.count ?? 0} bookings`}
                     />
                   );
@@ -489,11 +421,9 @@ function Analytics() {
               </div>
             ))}
             <div className="flex items-center gap-2 mt-3 pl-10">
-              <div className="text-[9px] font-mono text-muted-foreground">Low</div>
-              {[0.06, 0.25, 0.5, 0.75, 0.96].map((a) => (
-                <div key={a} className="w-4 h-4 rounded-sm" style={{ background: `rgba(0, 212, 255, ${a})` }} />
-              ))}
-              <div className="text-[9px] font-mono text-muted-foreground">High</div>
+              <span className="text-[9px] font-mono text-muted-foreground">Low</span>
+              {[0.06, 0.25, 0.5, 0.75, 0.96].map((a) => <div key={a} className="w-4 h-4 rounded-sm" style={{ background: `rgba(0,212,255,${a})` }} />)}
+              <span className="text-[9px] font-mono text-muted-foreground">High</span>
             </div>
           </div>
         </div>
@@ -502,23 +432,17 @@ function Analytics() {
   );
 }
 
-/* ── ZONES ────────────────────────────────────────────────────────────── */
+/* ── ZONES ────────────────────────────────────────────────────────────────── */
 function ZonesAdmin() {
   const qc = useQueryClient();
-  const q = useQuery({
-    queryKey: ["admin-zones"], queryFn: async () => {
-      const { data, error } = await supabase.from("zones").select("*").order("created_at", { ascending: false });
-      if (error) throw error; return data ?? [];
-    },
-  });
-  const [editing, setEditing] = useState<any>(null);
-  const [open, setOpen] = useState(false);
+  const q  = useQuery({ queryKey: ["admin-zones"], queryFn: () => apiClient.zones.list() });
+  const [editing, setEditing] = useState<ZoneDto | null>(null);
+  const [open,    setOpen]    = useState(false);
 
   async function remove(id: string) {
-    if (!confirm("Delete this zone? Workstations & bookings linked to it may break.")) return;
-    const { error } = await supabase.from("zones").delete().eq("id", id);
-    if (error) return toast.error(error.message);
-    toast.success("Zone deleted"); qc.invalidateQueries({ queryKey: ["admin-zones"] });
+    if (!confirm("Delete this zone?")) return;
+    try { await apiClient.zones.delete(id); toast.success("Zone deleted"); qc.invalidateQueries({ queryKey: ["admin-zones"] }); }
+    catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
   return (
@@ -530,15 +454,15 @@ function ZonesAdmin() {
         </Button>
       </div>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {(q.data ?? []).map((z: any) => (
+        {(q.data ?? []).map((z) => (
           <Card key={z.id} className="glass-card p-4 space-y-2">
             <div className="flex justify-between items-start">
               <div>
                 <div className="font-display text-base text-primary">{z.name}</div>
-                <div className="text-[10px] font-mono text-accent">{z.tier} · {formatPrice(z.hourly_rate)}/h · {z.seat_count} seats</div>
+                <div className="text-[10px] font-mono text-accent">{z.tier} · {formatPrice(z.hourlyRate)}/h · {z.seatCount} seats</div>
               </div>
-              <div className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${z.is_active ? "bg-green-400/15 text-green-300" : "bg-muted text-muted-foreground"}`}>
-                {z.is_active ? "ACTIVE" : "OFFLINE"}
+              <div className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${z.isActive ? "bg-green-400/15 text-green-300" : "bg-muted text-muted-foreground"}`}>
+                {z.isActive ? "ACTIVE" : "OFFLINE"}
               </div>
             </div>
             <div className="text-[11px] text-muted-foreground line-clamp-2">{z.description}</div>
@@ -549,24 +473,27 @@ function ZonesAdmin() {
           </Card>
         ))}
       </div>
-      <ZoneDialog open={open} onOpenChange={setOpen} zone={editing} onSaved={() => qc.invalidateQueries({ queryKey: ["admin-zones"] })} />
+      <ZoneDialog open={open} onOpenChange={setOpen} zone={editing} onSaved={() => { qc.invalidateQueries({ queryKey: ["admin-zones"] }); setOpen(false); }} />
     </div>
   );
 }
 
-function ZoneDialog({ open, onOpenChange, zone, onSaved }: { open: boolean; onOpenChange: (b: boolean) => void; zone: any; onSaved: () => void }) {
-  const [form, setForm] = useState<any>({ name: "", tier: "Standard", hourly_rate: 0, seat_count: 0, description: "", image_url: "", is_active: true });
+function ZoneDialog({ open, onOpenChange, zone, onSaved }: { open: boolean; onOpenChange: (b: boolean) => void; zone: ZoneDto | null; onSaved: () => void }) {
+  const blank = { name: "", tier: "Standard", hourlyRate: 60, seatCount: 10, description: "", imageUrl: "", isActive: true };
+  const [form, setForm] = useState(blank);
+
   useEffect(() => {
-    if (zone) setForm({ name: zone.name, tier: zone.tier, hourly_rate: zone.hourly_rate, seat_count: zone.seat_count, description: zone.description ?? "", image_url: zone.image_url ?? "", is_active: zone.is_active });
-    else setForm({ name: "", tier: "Standard", hourly_rate: 0, seat_count: 0, description: "", image_url: "", is_active: true });
+    setForm(zone ? { name: zone.name, tier: zone.tier, hourlyRate: zone.hourlyRate, seatCount: zone.seatCount, description: zone.description ?? "", imageUrl: zone.imageUrl ?? "", isActive: zone.isActive } : blank);
   }, [zone, open]);
 
   async function save() {
-    const payload = { ...form, hourly_rate: Number(form.hourly_rate), seat_count: Number(form.seat_count) };
-    const { error } = zone ? await supabase.from("zones").update(payload).eq("id", zone.id) : await supabase.from("zones").insert(payload);
-    if (error) return toast.error(error.message);
-    toast.success(zone ? "Zone updated" : "Zone created");
-    onSaved(); onOpenChange(false);
+    try {
+      const d = { ...form, hourlyRate: Number(form.hourlyRate), seatCount: Number(form.seatCount) };
+      if (zone) await apiClient.zones.update({ ...zone, ...d });
+      else       await apiClient.zones.create(d as any);
+      toast.success(zone ? "Zone updated" : "Zone created");
+      onSaved();
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
   return (
@@ -582,12 +509,12 @@ function ZoneDialog({ open, onOpenChange, zone, onSaved }: { open: boolean; onOp
                 <SelectContent>{TIERS.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label className="text-xs">Hourly Rate</Label><Input type="number" step="0.01" value={form.hourly_rate} onChange={(e) => setForm({ ...form, hourly_rate: e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">Hourly Rate</Label><Input type="number" step="0.01" value={form.hourlyRate} onChange={(e) => setForm({ ...form, hourlyRate: +e.target.value })} className="bg-background border-primary/30" /></div>
           </div>
-          <div><Label className="text-xs">Seats</Label><Input type="number" value={form.seat_count} onChange={(e) => setForm({ ...form, seat_count: e.target.value })} className="bg-background border-primary/30" /></div>
-          <div><Label className="text-xs">Image URL</Label><Input value={form.image_url} onChange={(e) => setForm({ ...form, image_url: e.target.value })} className="bg-background border-primary/30" /></div>
+          <div><Label className="text-xs">Seats</Label><Input type="number" value={form.seatCount} onChange={(e) => setForm({ ...form, seatCount: +e.target.value })} className="bg-background border-primary/30" /></div>
+          <div><Label className="text-xs">Image URL</Label><Input value={form.imageUrl} onChange={(e) => setForm({ ...form, imageUrl: e.target.value })} className="bg-background border-primary/30" /></div>
           <div><Label className="text-xs">Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="bg-background border-primary/30" /></div>
-          <div className="flex items-center gap-2"><Switch checked={form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: v })} /><Label className="text-xs">Active</Label></div>
+          <div className="flex items-center gap-2"><Switch checked={form.isActive} onCheckedChange={(v) => setForm({ ...form, isActive: v })} /><Label className="text-xs">Active</Label></div>
         </div>
         <DialogFooter><Button onClick={save} className="bg-primary text-primary-foreground font-mono text-xs">SAVE</Button></DialogFooter>
       </DialogContent>
@@ -595,23 +522,17 @@ function ZoneDialog({ open, onOpenChange, zone, onSaved }: { open: boolean; onOp
   );
 }
 
-/* ── PACKAGES ─────────────────────────────────────────────────────────── */
+/* ── PACKAGES ─────────────────────────────────────────────────────────────── */
 function PackagesAdmin() {
   const qc = useQueryClient();
-  const q = useQuery({
-    queryKey: ["admin-packages"], queryFn: async () => {
-      const { data, error } = await supabase.from("packages").select("*").order("created_at", { ascending: false });
-      if (error) throw error; return data ?? [];
-    },
-  });
-  const [editing, setEditing] = useState<any>(null);
-  const [open, setOpen] = useState(false);
+  const q  = useQuery({ queryKey: ["admin-packages"], queryFn: () => apiClient.packages.list() });
+  const [editing, setEditing] = useState<PackageDto | null>(null);
+  const [open,    setOpen]    = useState(false);
 
   async function remove(id: string) {
     if (!confirm("Delete this package?")) return;
-    const { error } = await supabase.from("packages").delete().eq("id", id);
-    if (error) return toast.error(error.message);
-    toast.success("Package deleted"); qc.invalidateQueries({ queryKey: ["admin-packages"] });
+    try { await apiClient.packages.delete(id); toast.success("Package deleted"); qc.invalidateQueries({ queryKey: ["admin-packages"] }); }
+    catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
   return (
@@ -623,15 +544,15 @@ function PackagesAdmin() {
         </Button>
       </div>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {(q.data ?? []).map((p: any) => (
+        {(q.data ?? []).map((p) => (
           <Card key={p.id} className="glass-card p-4 space-y-2">
             <div className="flex justify-between items-start">
               <div>
                 <div className="font-display text-base text-primary">{p.name}</div>
-                <div className="text-[10px] font-mono text-accent">{p.category} · {formatPrice(p.price)} · {p.duration_minutes}min · {p.xp_reward}XP</div>
+                <div className="text-[10px] font-mono text-accent">{p.category} · {formatPrice(p.price)} · {p.durationMinutes}min · {p.xpReward}XP</div>
               </div>
-              <div className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${p.is_active ? "bg-green-400/15 text-green-300" : "bg-muted text-muted-foreground"}`}>
-                {p.is_active ? "ACTIVE" : "OFF"}
+              <div className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${p.isActive ? "bg-green-400/15 text-green-300" : "bg-muted text-muted-foreground"}`}>
+                {p.isActive ? "ACTIVE" : "OFF"}
               </div>
             </div>
             <div className="text-[11px] text-muted-foreground line-clamp-2">{p.description}</div>
@@ -642,24 +563,27 @@ function PackagesAdmin() {
           </Card>
         ))}
       </div>
-      <PackageDialog open={open} onOpenChange={setOpen} pkg={editing} onSaved={() => qc.invalidateQueries({ queryKey: ["admin-packages"] })} />
+      <PackageDialog open={open} onOpenChange={setOpen} pkg={editing} onSaved={() => { qc.invalidateQueries({ queryKey: ["admin-packages"] }); setOpen(false); }} />
     </div>
   );
 }
 
-function PackageDialog({ open, onOpenChange, pkg, onSaved }: { open: boolean; onOpenChange: (b: boolean) => void; pkg: any; onSaved: () => void }) {
-  const [form, setForm] = useState<any>({ name: "", category: "Hourly", price: 0, duration_minutes: 60, xp_reward: 50, description: "", is_active: true });
+function PackageDialog({ open, onOpenChange, pkg, onSaved }: { open: boolean; onOpenChange: (b: boolean) => void; pkg: PackageDto | null; onSaved: () => void }) {
+  const blank = { name: "", category: "Hourly", price: 60, durationMinutes: 60, xpReward: 100, description: "", isActive: true };
+  const [form, setForm] = useState(blank);
+
   useEffect(() => {
-    if (pkg) setForm({ name: pkg.name, category: pkg.category, price: pkg.price, duration_minutes: pkg.duration_minutes, xp_reward: pkg.xp_reward, description: pkg.description ?? "", is_active: pkg.is_active });
-    else setForm({ name: "", category: "Hourly", price: 0, duration_minutes: 60, xp_reward: 50, description: "", is_active: true });
+    setForm(pkg ? { name: pkg.name, category: pkg.category, price: pkg.price, durationMinutes: pkg.durationMinutes, xpReward: pkg.xpReward, description: pkg.description ?? "", isActive: pkg.isActive } : blank);
   }, [pkg, open]);
 
   async function save() {
-    const payload = { ...form, price: Number(form.price), duration_minutes: Number(form.duration_minutes), xp_reward: Number(form.xp_reward) };
-    const { error } = pkg ? await supabase.from("packages").update(payload).eq("id", pkg.id) : await supabase.from("packages").insert(payload);
-    if (error) return toast.error(error.message);
-    toast.success(pkg ? "Package updated" : "Package created");
-    onSaved(); onOpenChange(false);
+    try {
+      const d = { ...form, price: Number(form.price), durationMinutes: Number(form.durationMinutes), xpReward: Number(form.xpReward) };
+      if (pkg) await apiClient.packages.update({ ...pkg, ...d });
+      else      await apiClient.packages.create(d);
+      toast.success(pkg ? "Package updated" : "Package created");
+      onSaved();
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
   return (
@@ -675,14 +599,14 @@ function PackageDialog({ open, onOpenChange, pkg, onSaved }: { open: boolean; on
                 <SelectContent>{PKG_CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label className="text-xs">Price</Label><Input type="number" step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">Price</Label><Input type="number" step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="bg-background border-primary/30" /></div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div><Label className="text-xs">Duration (min)</Label><Input type="number" value={form.duration_minutes} onChange={(e) => setForm({ ...form, duration_minutes: e.target.value })} className="bg-background border-primary/30" /></div>
-            <div><Label className="text-xs">XP Reward</Label><Input type="number" value={form.xp_reward} onChange={(e) => setForm({ ...form, xp_reward: e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">Duration (min)</Label><Input type="number" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: +e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">XP Reward</Label><Input type="number" value={form.xpReward} onChange={(e) => setForm({ ...form, xpReward: +e.target.value })} className="bg-background border-primary/30" /></div>
           </div>
           <div><Label className="text-xs">Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="bg-background border-primary/30" /></div>
-          <div className="flex items-center gap-2"><Switch checked={form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: v })} /><Label className="text-xs">Active</Label></div>
+          <div className="flex items-center gap-2"><Switch checked={form.isActive} onCheckedChange={(v) => setForm({ ...form, isActive: v })} /><Label className="text-xs">Active</Label></div>
         </div>
         <DialogFooter><Button onClick={save} className="bg-primary text-primary-foreground font-mono text-xs">SAVE</Button></DialogFooter>
       </DialogContent>
@@ -690,23 +614,17 @@ function PackageDialog({ open, onOpenChange, pkg, onSaved }: { open: boolean; on
   );
 }
 
-/* ── TOURNAMENTS ──────────────────────────────────────────────────────── */
+/* ── TOURNAMENTS ──────────────────────────────────────────────────────────── */
 function TournamentsAdmin() {
   const qc = useQueryClient();
-  const q = useQuery({
-    queryKey: ["admin-tournaments"], queryFn: async () => {
-      const { data, error } = await supabase.from("tournaments").select("*").order("start_time", { ascending: false });
-      if (error) throw error; return data ?? [];
-    },
-  });
-  const [editing, setEditing] = useState<any>(null);
-  const [open, setOpen] = useState(false);
+  const q  = useQuery({ queryKey: ["admin-tournaments"], queryFn: () => apiClient.tournaments.list() });
+  const [editing, setEditing] = useState<TournamentDto | null>(null);
+  const [open,    setOpen]    = useState(false);
 
   async function remove(id: string) {
     if (!confirm("Delete this tournament?")) return;
-    const { error } = await supabase.from("tournaments").delete().eq("id", id);
-    if (error) return toast.error(error.message);
-    toast.success("Tournament deleted"); qc.invalidateQueries({ queryKey: ["admin-tournaments"] });
+    try { await apiClient.tournaments.delete(id); toast.success("Tournament deleted"); qc.invalidateQueries({ queryKey: ["admin-tournaments"] }); }
+    catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
   return (
@@ -718,20 +636,20 @@ function TournamentsAdmin() {
         </Button>
       </div>
       <div className="grid md:grid-cols-2 gap-3">
-        {(q.data ?? []).map((tn: any) => (
+        {(q.data ?? []).map((tn) => (
           <Card key={tn.id} className="glass-card p-4 space-y-2">
             <div className="flex justify-between items-start">
               <div>
                 <div className="font-display text-base text-primary">{tn.name}</div>
                 <div className="text-[10px] font-mono text-accent">{tn.game} · {tn.status}</div>
-                <div className="text-[10px] text-muted-foreground font-mono">{tn.start_time ? new Date(tn.start_time).toLocaleString() : "TBD"}</div>
+                <div className="text-[10px] text-muted-foreground font-mono">{tn.startTime ? new Date(tn.startTime).toLocaleString() : "TBD"}</div>
               </div>
               <div className="text-right">
                 <div className="text-[9px] text-muted-foreground font-mono">PRIZE</div>
-                <div className="font-display text-amber-400 text-sm">{formatPrice(tn.prize_pool)}</div>
+                <div className="font-display text-amber-400 text-sm">{formatPrice(tn.prizePool)}</div>
               </div>
             </div>
-            <div className="text-[10px] text-muted-foreground font-mono">Entry: {formatPrice(tn.entry_fee)} · Slots: {tn.current_participants}/{tn.max_participants}</div>
+            <div className="text-[10px] text-muted-foreground font-mono">Entry: {formatPrice(tn.entryFee)} · Slots: {tn.currentParticipants}/{tn.maxParticipants}</div>
             <div className="flex gap-2 pt-1">
               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setEditing(tn); setOpen(true); }}><Pencil className="w-3 h-3 mr-1" />Edit</Button>
               <Button size="sm" variant="outline" className="h-7 text-xs text-destructive border-destructive/40" onClick={() => remove(tn.id)}><Trash2 className="w-3 h-3 mr-1" />Delete</Button>
@@ -739,53 +657,56 @@ function TournamentsAdmin() {
           </Card>
         ))}
       </div>
-      <TournamentDialog open={open} onOpenChange={setOpen} tournament={editing} onSaved={() => qc.invalidateQueries({ queryKey: ["admin-tournaments"] })} />
+      <TournamentDialog open={open} onOpenChange={setOpen} tournament={editing} onSaved={() => { qc.invalidateQueries({ queryKey: ["admin-tournaments"] }); setOpen(false); }} />
     </div>
   );
 }
 
-function TournamentDialog({ open, onOpenChange, tournament, onSaved }: { open: boolean; onOpenChange: (b: boolean) => void; tournament: any; onSaved: () => void }) {
-  const [form, setForm] = useState<any>({ name: "", game: "", description: "", start_time: "", prize_pool: 0, entry_fee: 0, max_participants: 16, status: "Upcoming", image_url: "" });
+function TournamentDialog({ open, onOpenChange, tournament, onSaved }: { open: boolean; onOpenChange: (b: boolean) => void; tournament: TournamentDto | null; onSaved: () => void }) {
+  const blank = { name: "", game: "", description: "", startTime: "", prizePool: 0, entryFee: 0, maxParticipants: 16, status: "Upcoming", imageUrl: "" };
+  const [form, setForm] = useState(blank);
+
   useEffect(() => {
-    if (tournament) setForm({
+    setForm(tournament ? {
       name: tournament.name, game: tournament.game ?? "", description: tournament.description ?? "",
-      start_time: tournament.start_time ? new Date(tournament.start_time).toISOString().slice(0, 16) : "",
-      prize_pool: tournament.prize_pool, entry_fee: tournament.entry_fee, max_participants: tournament.max_participants,
-      status: tournament.status, image_url: tournament.image_url ?? "",
-    });
-    else setForm({ name: "", game: "", description: "", start_time: "", prize_pool: 0, entry_fee: 0, max_participants: 16, status: "Upcoming", image_url: "" });
+      startTime: tournament.startTime ? new Date(tournament.startTime).toISOString().slice(0, 16) : "",
+      prizePool: tournament.prizePool, entryFee: tournament.entryFee,
+      maxParticipants: tournament.maxParticipants, status: tournament.status, imageUrl: tournament.imageUrl ?? "",
+    } : blank);
   }, [tournament, open]);
 
   async function save() {
-    const payload = { ...form, prize_pool: Number(form.prize_pool), entry_fee: Number(form.entry_fee), max_participants: Number(form.max_participants), start_time: form.start_time ? new Date(form.start_time).toISOString() : null };
-    const { error } = tournament ? await supabase.from("tournaments").update(payload).eq("id", tournament.id) : await supabase.from("tournaments").insert(payload);
-    if (error) return toast.error(error.message);
-    toast.success(tournament ? "Tournament updated" : "Tournament created");
-    onSaved(); onOpenChange(false);
+    try {
+      const d = { ...form, prizePool: Number(form.prizePool), entryFee: Number(form.entryFee), maxParticipants: Number(form.maxParticipants), startTime: form.startTime ? new Date(form.startTime).toISOString() : undefined };
+      if (tournament) await apiClient.tournaments.update({ ...tournament, ...d });
+      else             await apiClient.tournaments.create(d);
+      toast.success(tournament ? "Tournament updated" : "Tournament created");
+      onSaved();
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="bg-background border-primary/30 max-w-lg">
         <DialogHeader><DialogTitle className="font-display text-primary text-base">{tournament ? "EDIT TOURNAMENT" : "NEW TOURNAMENT"}</DialogTitle></DialogHeader>
-        <div className="space-y-3 max-h-[70vh] overflow-y-auto">
+        <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
           <div><Label className="text-xs">Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="bg-background border-primary/30" /></div>
           <div className="grid grid-cols-2 gap-3">
             <div><Label className="text-xs">Game</Label><Input value={form.game} onChange={(e) => setForm({ ...form, game: e.target.value })} className="bg-background border-primary/30" /></div>
             <div><Label className="text-xs">Status</Label>
               <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })}>
                 <SelectTrigger className="bg-background border-primary/30"><SelectValue /></SelectTrigger>
-                <SelectContent>{TOURNAMENT_STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                <SelectContent>{TOUR_STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
               </Select>
             </div>
           </div>
-          <div><Label className="text-xs">Start Time</Label><Input type="datetime-local" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} className="bg-background border-primary/30" /></div>
+          <div><Label className="text-xs">Start Time</Label><Input type="datetime-local" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="bg-background border-primary/30" /></div>
           <div className="grid grid-cols-3 gap-3">
-            <div><Label className="text-xs">Prize Pool</Label><Input type="number" step="0.01" value={form.prize_pool} onChange={(e) => setForm({ ...form, prize_pool: e.target.value })} className="bg-background border-primary/30" /></div>
-            <div><Label className="text-xs">Entry Fee</Label><Input type="number" step="0.01" value={form.entry_fee} onChange={(e) => setForm({ ...form, entry_fee: e.target.value })} className="bg-background border-primary/30" /></div>
-            <div><Label className="text-xs">Max</Label><Input type="number" value={form.max_participants} onChange={(e) => setForm({ ...form, max_participants: e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">Prize Pool</Label><Input type="number" step="0.01" value={form.prizePool} onChange={(e) => setForm({ ...form, prizePool: +e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">Entry Fee</Label><Input type="number" step="0.01" value={form.entryFee} onChange={(e) => setForm({ ...form, entryFee: +e.target.value })} className="bg-background border-primary/30" /></div>
+            <div><Label className="text-xs">Max</Label><Input type="number" value={form.maxParticipants} onChange={(e) => setForm({ ...form, maxParticipants: +e.target.value })} className="bg-background border-primary/30" /></div>
           </div>
-          <div><Label className="text-xs">Image URL</Label><Input value={form.image_url} onChange={(e) => setForm({ ...form, image_url: e.target.value })} className="bg-background border-primary/30" /></div>
+          <div><Label className="text-xs">Image URL</Label><Input value={form.imageUrl} onChange={(e) => setForm({ ...form, imageUrl: e.target.value })} className="bg-background border-primary/30" /></div>
           <div><Label className="text-xs">Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="bg-background border-primary/30" /></div>
         </div>
         <DialogFooter><Button onClick={save} className="bg-primary text-primary-foreground font-mono text-xs">SAVE</Button></DialogFooter>
@@ -794,57 +715,49 @@ function TournamentDialog({ open, onOpenChange, tournament, onSaved }: { open: b
   );
 }
 
-/* ── USERS ────────────────────────────────────────────────────────────── */
+/* ── USERS ────────────────────────────────────────────────────────────────── */
 function UsersAdmin() {
   const qc = useQueryClient();
-  const q = useQuery({
-    queryKey: ["admin-users"], queryFn: async () => {
-      const [{ data: profiles }, { data: roles }] = await Promise.all([
-        supabase.from("profiles").select("*").order("created_at", { ascending: false }),
-        supabase.from("user_roles").select("user_id, role"),
-      ]);
-      const adminSet = new Set((roles ?? []).filter((r: any) => r.role === "admin").map((r: any) => r.user_id));
-      return (profiles ?? []).map((p: any) => ({ ...p, isAdmin: adminSet.has(p.id) }));
-    },
-  });
+  const q  = useQuery({ queryKey: ["admin-users"], queryFn: () => apiClient.users.list() });
   const [search, setSearch] = useState("");
 
-  async function toggleAdmin(uid: string, makeAdmin: boolean) {
-    if (makeAdmin) {
-      const { error } = await supabase.from("user_roles").insert({ user_id: uid, role: "admin" } as any);
-      if (error) return toast.error(error.message);
-      toast.success("Admin granted");
-    } else {
-      const { error } = await supabase.from("user_roles").delete().eq("user_id", uid).eq("role", "admin");
-      if (error) return toast.error(error.message);
-      toast.success("Admin revoked");
-    }
-    qc.invalidateQueries({ queryKey: ["admin-users"] });
+  async function toggleAdmin(id: string, isAdmin: boolean) {
+    try {
+      await apiClient.users.setRole(id, isAdmin ? "user" : "admin");
+      toast.success(isAdmin ? "Admin revoked" : "Admin granted");
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+    } catch (e: unknown) { toast.error(e instanceof Error ? e.message : String(e)); }
   }
 
-  const filtered = (q.data ?? []).filter((u: any) =>
-    !search || (u.username ?? "").toLowerCase().includes(search.toLowerCase()) || (u.full_name ?? "").toLowerCase().includes(search.toLowerCase())
+  const filtered = (q.data ?? []).filter((u) =>
+    !search ||
+    (u.username ?? "").toLowerCase().includes(search.toLowerCase()) ||
+    (u.email).toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center gap-3">
         <h2 className="font-display text-xl text-primary">Users</h2>
-        <Input placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-xs bg-background border-primary/30" />
+        <Input placeholder="Search by username or email…" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-xs bg-background border-primary/30" />
       </div>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {filtered.map((u: any) => (
+        {filtered.map((u) => (
           <Card key={u.id} className="glass-card p-4 space-y-2">
             <div className="flex justify-between items-start">
               <div>
                 <div className="font-display text-sm text-primary">{u.username ?? "—"}</div>
-                <div className="text-xs text-muted-foreground">{u.full_name}</div>
-                <div className="text-[10px] font-mono text-accent">LVL {u.level} · {u.xp_points}XP · {u.total_sessions} sessions</div>
+                <div className="text-xs text-muted-foreground">{u.fullName}</div>
+                <div className="text-[10px] font-mono text-accent">LVL {u.level} · {u.xpPoints}XP · {u.totalSessions} sessions</div>
+                <div className="text-[10px] font-mono text-muted-foreground">{u.email}</div>
               </div>
-              {u.isAdmin && <div className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-400/15 text-amber-300">ADMIN</div>}
+              {u.role === "admin" && <div className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-400/15 text-amber-300">ADMIN</div>}
             </div>
-            <Button size="sm" variant="outline" className={`h-7 text-xs ${u.isAdmin ? "text-destructive border-destructive/40" : ""}`} onClick={() => toggleAdmin(u.id, !u.isAdmin)}>
-              {u.isAdmin ? <><ShieldOff className="w-3 h-3 mr-1" />Revoke admin</> : <><Shield className="w-3 h-3 mr-1" />Make admin</>}
+            <Button size="sm" variant="outline" className={`h-7 text-xs ${u.role === "admin" ? "text-destructive border-destructive/40" : ""}`}
+              onClick={() => toggleAdmin(u.id, u.role === "admin")}>
+              {u.role === "admin"
+                ? <><ShieldOff className="w-3 h-3 mr-1" />Revoke admin</>
+                : <><Shield className="w-3 h-3 mr-1" />Make admin</>}
             </Button>
           </Card>
         ))}

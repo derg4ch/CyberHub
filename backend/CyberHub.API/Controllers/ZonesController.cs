@@ -44,6 +44,24 @@ public class ZonesController(IZoneService zoneService) : ControllerBase
         catch (KeyNotFoundException) { return NotFound(); }
     }
 
+    [HttpGet("workstations")]
+    [ProducesResponseType(typeof(IEnumerable<WorkstationDto>), 200)]
+    public async Task<IActionResult> GetAllWorkstations([FromQuery] bool? active)
+    {
+        var result = await zoneService.GetAllWorkstationsAsync(active);
+        return Ok(result);
+    }
+
+    [HttpGet("{id:guid}/workstations")]
+    [ProducesResponseType(typeof(IEnumerable<WorkstationDto>), 200)]
+    public async Task<IActionResult> GetWorkstations(Guid id, [FromQuery] bool? active)
+    {
+        var zone = await zoneService.GetWorkstationsAsync(id);
+        if (zone is null) return NotFound();
+        var ws = active == true ? zone.Where(w => w.IsActive) : zone;
+        return Ok(ws);
+    }
+
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(204)]
     [ProducesResponseType(404)]

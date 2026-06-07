@@ -3,12 +3,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace CyberHub.DAL.Context;
 
-/// <summary>
-/// Основний контекст EF Core для NEXUS Cyber Lounge.
-/// Маппінг відповідає схемі Supabase (public).
-/// </summary>
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    public DbSet<AppUser>     Users        => Set<AppUser>();
     public DbSet<Zone>        Zones        => Set<Zone>();
     public DbSet<Workstation> Workstations => Set<Workstation>();
     public DbSet<Package>     Packages     => Set<Package>();
@@ -17,7 +14,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
-        mb.HasDefaultSchema("public");
+        mb.HasDefaultSchema("cyberhub_db");
+
+        mb.Entity<AppUser>(e =>
+        {
+            e.Property(u => u.Id).HasDefaultValueSql("gen_random_uuid()");
+            e.Property(u => u.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(u => u.Role).HasDefaultValue("user");
+            e.Property(u => u.Level).HasDefaultValue(1);
+            e.HasIndex(u => u.Email).IsUnique();
+        });
 
         mb.Entity<Zone>(e =>
         {

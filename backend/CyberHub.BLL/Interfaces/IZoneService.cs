@@ -9,4 +9,6 @@ public interface IZoneService
     Task<ZoneDto> CreateAsync(CreateZoneRequest request);
     Task<ZoneDto> UpdateAsync(UpdateZoneRequest request);
     Task DeleteAsync(Guid id);
+    Task<IEnumerable<WorkstationDto>?> GetWorkstationsAsync(Guid zoneId);
+    Task<IEnumerable<WorkstationDto>>  GetAllWorkstationsAsync(bool? active = null);
 }

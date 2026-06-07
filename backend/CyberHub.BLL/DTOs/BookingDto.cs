@@ -6,7 +6,8 @@ public record BookingDto(
     Guid Id, Guid UserId, Guid WorkstationId, Guid ZoneId, Guid? PackageId,
     DateTime StartTime, DateTime EndTime, string Status,
     decimal TotalPrice, int XpEarned, string? Notes, DateTime CreatedAt,
-    string? ZoneName, string? ZoneTier, string? WorkstationName, string? PackageName
+    string? ZoneName, string? ZoneTier, string? WorkstationName, string? PackageName,
+    string? Username
 );
 
 public record CreateBookingRequest(
